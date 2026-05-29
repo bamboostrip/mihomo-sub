@@ -1,0 +1,177 @@
+#!/bin/sh
+
+# CGI API - Mihomo 订阅管理后端
+
+CONFIG_DIR="/root/.config/mihomo"
+SUB_URLS_FILE="${CONFIG_DIR}/sub_urls.txt"
+SCHEDULE_FILE="${CONFIG_DIR}/schedule.conf"
+LOG_FILE="${CONFIG_DIR}/log.txt"
+SUB_SCRIPT="/etc/periodic/15min/sub.sh"
+
+# 输出 JSON 响应头
+json_header() {
+    printf "Content-Type: application/json; charset=utf-8\r\n\r\n"
+}
+
+# 读取 POST body
+read_body() {
+    if [ "${REQUEST_METHOD}" = "POST" ]; then
+        dd bs=1 count="${CONTENT_LENGTH}" 2>/dev/null
+    fi
+}
+
+# 获取 action 参数
+action=$(echo "${QUERY_STRING}" | sed -n 's/.*action=\([^&]*\).*/\1/p')
+if [ -z "${action}" ]; then
+    action="${QUERY_STRING}"
+fi
+
+json_header
+
+case "${action}" in
+    # ---------------------------
+    # 列出订阅
+    # ---------------------------
+    list)
+        printf '{"subscriptions":['
+        first=true
+        if [ -f "${SUB_URLS_FILE}" ]; then
+            while IFS= read -r line || [ -n "${line}" ]; do
+                case "${line}" in
+                    ""|"#"*) continue ;;
+                esac
+                if $first; then
+                    first=false
+                else
+                    printf ','
+                fi
+                # 转义 JSON 特殊字符
+                escaped=$(echo "${line}" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\x09/\\t/g; s/\x0A/\\n/g; s/\x0D/\\r/g')
+                printf '"%s"' "${escaped}"
+            done < "${SUB_URLS_FILE}"
+        fi
+        printf ']}\n'
+        ;;
+
+    # ---------------------------
+    # 添加订阅
+    # ---------------------------
+    add)
+        body=$(read_body)
+        url=$(echo "${body}" | sed -n 's/.*url=\([^&]*\).*/\1/p' | sed 's/+/ /g;s/%/\\x/g')
+        url=$(printf "%b" "${url}")
+        if [ -z "${url}" ]; then
+            printf '{"error":"URL 不能为空"}\n'
+            exit 0
+        fi
+        # 基本格式验证
+        case "${url}" in
+            http://*|https://*) ;;
+            *)
+                printf '{"error":"URL 必须以 http:// 或 https:// 开头"}\n'
+                exit 0
+                ;;
+        esac
+        # 检查重复
+        if [ -f "${SUB_URLS_FILE}" ] && grep -qFx "${url}" "${SUB_URLS_FILE}" 2>/dev/null; then
+            printf '{"error":"该订阅已存在"}\n'
+            exit 0
+        fi
+        echo "${url}" >> "${SUB_URLS_FILE}"
+        printf '{"success":true,"message":"订阅已添加"}\n'
+        ;;
+
+    # ---------------------------
+    # 删除订阅
+    # ---------------------------
+    delete)
+        body=$(read_body)
+        url=$(echo "${body}" | sed -n 's/.*url=\([^&]*\).*/\1/p' | sed 's/+/ /g;s/%/\\x/g')
+        url=$(printf "%b" "${url}")
+        if [ -z "${url}" ]; then
+            printf '{"error":"URL 不能为空"}\n'
+            exit 0
+        fi
+        if [ -f "${SUB_URLS_FILE}" ]; then
+            grep -vFx "${url}" "${SUB_URLS_FILE}" > "${SUB_URLS_FILE}.tmp" 2>/dev/null
+            mv "${SUB_URLS_FILE}.tmp" "${SUB_URLS_FILE}"
+        fi
+        printf '{"success":true,"message":"订阅已删除"}\n'
+        ;;
+
+    # ---------------------------
+    # 手动刷新
+    # ---------------------------
+    refresh)
+        # 在后台执行刷新，避免 CGI 超时
+        nohup "${SUB_SCRIPT}" --now > /dev/null 2>&1 &
+        printf '{"success":true,"message":"刷新已触发"}\n'
+        ;;
+
+    # ---------------------------
+    # 获取/设置调度
+    # ---------------------------
+    schedule)
+        if [ "${REQUEST_METHOD}" = "POST" ]; then
+            body=$(read_body)
+            val=$(echo "${body}" | sed -n 's/.*schedule=\([^&]*\).*/\1/p')
+            case "${val}" in
+                15min|hourly|daily)
+                    echo "${val}" > "${SCHEDULE_FILE}"
+                    printf '{"success":true,"schedule":"%s"}\n' "${val}"
+                    ;;
+                *)
+                    printf '{"error":"无效的调度值，可选: 15min, hourly, daily"}\n'
+                    ;;
+            esac
+        else
+            val=$(cat "${SCHEDULE_FILE}" 2>/dev/null || echo "daily")
+            printf '{"schedule":"%s"}\n' "${val}"
+        fi
+        ;;
+
+    # ---------------------------
+    # 获取日志
+    # ---------------------------
+    logs)
+        printf '{"logs":['
+        if [ -f "${LOG_FILE}" ]; then
+            # 返回最后 100 行
+            lines=$(tail -n 100 "${LOG_FILE}" 2>/dev/null)
+            first=true
+            while IFS= read -r logline || [ -n "${logline}" ]; do
+                if [ -z "${logline}" ]; then continue; fi
+                if $first; then
+                    first=false
+                else
+                    printf ','
+                fi
+                escaped=$(echo "${logline}" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\x09/\\t/g; s/\x0A/\\n/g; s/\x0D/\\r/g')
+                printf '"%s"' "${escaped}"
+            done <<EOF
+${lines}
+EOF
+        fi
+        printf ']}\n'
+        ;;
+
+    # ---------------------------
+    # 获取状态
+    # ---------------------------
+    status)
+        last_run=""
+        if [ -f "${LOG_FILE}" ]; then
+            last_run=$(sed -n 's/^\[\(.*\)\].*/\1/p' "${LOG_FILE}" | tail -1)
+        fi
+        schedule=$(cat "${SCHEDULE_FILE}" 2>/dev/null || echo "daily")
+        sub_count=0
+        if [ -f "${SUB_URLS_FILE}" ]; then
+            sub_count=$(grep -cEv '^(#|$)' "${SUB_URLS_FILE}" 2>/dev/null || echo 0)
+        fi
+        printf '{"last_run":"%s","schedule":"%s","sub_count":%d}\n' "${last_run}" "${schedule}" "${sub_count}"
+        ;;
+
+    *)
+        printf '{"error":"未知操作: %s"}\n' "${action}"
+        ;;
+esac

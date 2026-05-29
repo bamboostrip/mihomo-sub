@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mihomo 订阅管理</title>
+<style>
+:root {
+    --bg: #1a1b2e;
+    --card: #232540;
+    --border: #2e3058;
+    --text: #e0e0e8;
+    --text-dim: #8888a0;
+    --accent: #6c7bff;
+    --accent-hover: #8290ff;
+    --danger: #e0556a;
+    --danger-hover: #f06070;
+    --success: #4caf88;
+    --warning: #e0a840;
+    --radius: 12px;
+    --radius-sm: 8px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 20px 16px;
+    min-height: 100vh;
+}
+h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 16px;
+}
+.card-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 14px;
+}
+.status-row {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+.status-item {
+    flex: 1;
+    min-width: 120px;
+}
+.status-label {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-bottom: 2px;
+}
+.status-value {
+    font-size: 1rem;
+    font-weight: 500;
+}
+.status-ok { color: var(--success); }
+.status-warn { color: var(--warning); }
+
+.sub-list { list-style: none; }
+.sub-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+}
+.sub-item:last-child { border-bottom: none; }
+.sub-url {
+    flex: 1;
+    font-size: 0.85rem;
+    word-break: break-all;
+    color: var(--text);
+    background: var(--bg);
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+}
+.sub-del {
+    background: none;
+    border: 1px solid var(--danger);
+    color: var(--danger);
+    padding: 6px 14px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    transition: all 0.15s;
+}
+.sub-del:hover {
+    background: var(--danger);
+    color: #fff;
+}
+
+.add-form {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+.add-input {
+    flex: 1;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 0.85rem;
+    outline: none;
+    transition: border-color 0.15s;
+}
+.add-input:focus { border-color: var(--accent); }
+.add-input::placeholder { color: var(--text-dim); }
+
+.btn {
+    padding: 10px 20px;
+    border-radius: var(--radius-sm);
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    transition: all 0.15s;
+}
+.btn-primary { background: var(--accent); color: #fff; flex-shrink: 0; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-outline {
+    background: none;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+}
+.btn-outline:hover { background: var(--accent); color: #fff; }
+
+.schedule-options { display: flex; gap: 10px; }
+.schedule-opt {
+    flex: 1;
+    text-align: center;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.15s;
+}
+.schedule-opt:hover { border-color: var(--accent); }
+.schedule-opt.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+
+.action-row { display: flex; gap: 10px; }
+.action-row .btn { flex:1; text-align:center; }
+
+.log-viewer {
+    background: var(--bg);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+    max-height: 280px;
+    overflow-y: auto;
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 0.75rem;
+    line-height: 1.6;
+    color: var(--text-dim);
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 10px 24px;
+    border-radius: var(--radius-sm);
+    font-size: 0.85rem;
+    z-index: 999;
+    animation: fadeIn 0.2s;
+}
+.toast-success { background: var(--success); color: #fff; }
+.toast-error { background: var(--danger); color: #fff; }
+@keyframes fadeIn { from {opacity:0; transform:translateX(-50%) translateY(10px);} }
+
+.refreshing, .btn:disabled { opacity: 0.5; pointer-events: none; cursor: not-allowed; }
+.spin {
+    display: inline-block;
+    animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.empty-state {
+    text-align: center;
+    padding: 20px;
+    color: var(--text-dim);
+    font-size: 0.85rem;
+}
+</style>
+</head>
+<body>
+
+<h1>⚡ Mihomo 订阅管理</h1>
+
+<!-- 状态卡片 -->
+<div class="card">
+    <div class="card-title">运行状态</div>
+    <div class="status-row">
+        <div class="status-item">
+            <div class="status-label">最后刷新</div>
+            <div class="status-value" id="lastRun">-</div>
+        </div>
+        <div class="status-item">
+            <div class="status-label">定时调度</div>
+            <div class="status-value" id="scheduleDisplay">-</div>
+        </div>
+        <div class="status-item">
+            <div class="status-label">订阅数量</div>
+            <div class="status-value" id="subCount">0</div>
+        </div>
+    </div>
+</div>
+
+<!-- 订阅列表卡片 -->
+<div class="card" id="subCard">
+    <div class="card-title">订阅列表</div>
+    <ul class="sub-list" id="subList"></ul>
+    <div class="add-form">
+        <input class="add-input" id="subInput" placeholder="输入订阅 URL（http:// 或 https://）" autocomplete="off">
+        <button class="btn btn-primary" onclick="addSub()">＋ 添加</button>
+    </div>
+</div>
+
+<!-- 调度设置卡片 -->
+<div class="card">
+    <div class="card-title">定时刷新</div>
+    <div class="schedule-options" id="scheduleOpts">
+        <div class="schedule-opt" data-val="15min" onclick="setSchedule('15min')">每 15 分钟</div>
+        <div class="schedule-opt" data-val="hourly" onclick="setSchedule('hourly')">每小时</div>
+        <div class="schedule-opt" data-val="daily" onclick="setSchedule('daily')">每天</div>
+    </div>
+</div>
+
+<!-- 操作按钮 -->
+<div class="card">
+    <div class="action-row">
+        <button class="btn btn-primary" id="refreshBtn" onclick="doRefresh()">
+            <span id="refreshIcon">🔄</span><span class="btn-text"> 立即刷新</span>
+        </button>
+        <button class="btn btn-outline" onclick="openPanel()">📊 打开面板</button>
+    </div>
+</div>
+
+<!-- 日志卡片 -->
+<div class="card">
+    <div class="card-title">最近日志</div>
+    <div class="log-viewer" id="logViewer">加载中...</div>
+</div>
+
+<script>
+const API = '/cgi-bin/api';
+
+async function api(action, method, body) {
+    let url = API + '?action=' + action;
+    let opts = { method: method || 'GET' };
+    if (body) {
+        opts.method = 'POST';
+        opts.headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+        opts.body = body;
+    }
+    try {
+        let res = await fetch(url, opts);
+        return await res.json();
+    } catch(e) {
+        return { error: '网络请求失败: ' + e.message };
+    }
+}
+
+function toast(msg, ok) {
+    let t = document.createElement('div');
+    t.className = 'toast ' + (ok ? 'toast-success' : 'toast-error');
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 2500);
+}
+
+// 加载状态
+async function loadStatus() {
+    let s = await api('status');
+    document.getElementById('lastRun').textContent = s.last_run || '无记录';
+    document.getElementById('subCount').textContent = s.sub_count || 0;
+    let schMap = { '15min': '每 15 分钟', 'hourly': '每小时', 'daily': '每天' };
+    document.getElementById('scheduleDisplay').textContent = schMap[s.schedule] || s.schedule || '-';
+}
+
+// 加载订阅列表
+async function loadSubs() {
+    let data = await api('list');
+    let list = document.getElementById('subList');
+    list.innerHTML = '';
+    if (!data.subscriptions || data.subscriptions.length === 0) {
+        list.innerHTML = '<div class="empty-state">暂无订阅，请在上方添加</div>';
+        return;
+    }
+    data.subscriptions.forEach(url => {
+        let li = document.createElement('li');
+        li.className = 'sub-item';
+        li.innerHTML =
+            '<span class="sub-url">' + escHtml(url) + '</span>' +
+            '<button class="sub-del" onclick="delSub(this)">删除</button>';
+        li.querySelector('.sub-del').dataset.url = url;
+        list.appendChild(li);
+    });
+    loadStatus();
+}
+
+function escHtml(s) {
+    let d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
+// 添加订阅
+async function addSub() {
+    let input = document.getElementById('subInput');
+    let url = input.value.trim();
+    if (!url) { toast('请输入 URL', false); return; }
+    let r = await api('add', 'POST', 'url=' + encodeURIComponent(url));
+    if (r.error) { toast(r.error, false); return; }
+    toast('订阅已添加', true);
+    input.value = '';
+    loadSubs();
+}
+
+// 删除订阅
+async function delSub(btn) {
+    let url = btn.dataset.url;
+    let r = await api('delete', 'POST', 'url=' + encodeURIComponent(url));
+    if (r.error) { toast(r.error, false); return; }
+    toast('订阅已删除', true);
+    loadSubs();
+}
+
+// 设置调度
+async function setSchedule(val) {
+    let r = await api('schedule', 'POST', 'schedule=' + val);
+    if (r.error) { toast(r.error, false); return; }
+    let schMap = { '15min': '每 15 分钟', 'hourly': '每小时', 'daily': '每天' };
+    document.getElementById('scheduleDisplay').textContent = schMap[val];
+    // 更新选中状态
+    document.querySelectorAll('.schedule-opt').forEach(el => {
+        el.classList.toggle('active', el.dataset.val === val);
+    });
+    toast('调度已更新', true);
+}
+
+let refreshTimer = null;
+
+// 手动刷新
+async function doRefresh() {
+    let btn = document.getElementById('refreshBtn');
+    let icon = document.getElementById('refreshIcon');
+    if (btn.disabled) return;
+
+    btn.disabled = true;
+    btn.classList.add('refreshing');
+    icon.classList.add('spin');
+    btn.querySelector('.btn-text').textContent = ' 刷新中...';
+
+    let r = await api('refresh');
+    if (r.error) {
+        toast(r.error, false);
+        btn.disabled = false;
+        btn.classList.remove('refreshing');
+        icon.classList.remove('spin');
+        btn.querySelector('.btn-text').textContent = ' 立即刷新';
+        return;
+    }
+    toast('刷新已触发，请稍后查看日志', true);
+    // 轮询等待刷新完成，最多 60 秒
+    let tries = 0;
+    let poller = setInterval(async () => {
+        tries++;
+        await loadLogs();
+        await loadStatus();
+        if (tries >= 60) {
+            clearInterval(poller);
+            finishRefresh(btn, icon);
+        }
+    }, 1000);
+}
+
+function finishRefresh(btn, icon) {
+    btn.classList.remove('refreshing');
+    icon.classList.remove('spin');
+    btn.querySelector('.btn-text').textContent = ' 刷新完成';
+    toast('刷新完成', true);
+    // 30 秒冷却
+    let cd = 30;
+    let timer = setInterval(() => {
+        cd--;
+        btn.querySelector('.btn-text').textContent = ' ' + cd + 's 后可刷新';
+        if (cd <= 0) {
+            clearInterval(timer);
+            btn.disabled = false;
+            btn.querySelector('.btn-text').textContent = ' 立即刷新';
+        }
+    }, 1000);
+}
+
+// 打开面板
+function openPanel() {
+    window.open('//' + window.location.hostname + ':9090/ui', '_blank');
+}
+
+// 加载日志
+async function loadLogs() {
+    let data = await api('logs');
+    let viewer = document.getElementById('logViewer');
+    if (!data.logs || data.logs.length === 0) {
+        viewer.textContent = '暂无日志';
+        return;
+    }
+    viewer.textContent = data.logs.join('\n');
+    viewer.scrollTop = viewer.scrollHeight;
+}
+
+// 加载当前调度选中状态
+async function loadSchedule() {
+    let data = await api('schedule');
+    let cur = data.schedule || 'daily';
+    document.querySelectorAll('.schedule-opt').forEach(el => {
+        el.classList.toggle('active', el.dataset.val === cur);
+    });
+}
+
+// 回车添加订阅
+document.getElementById('subInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') addSub();
+});
+
+// 初始加载
+loadStatus();
+loadSubs();
+loadLogs();
+loadSchedule();
+</script>
+</body>
+</html>

@@ -66,3 +66,20 @@ jobs:
           lsw951753/mihomo-sub:latest
         cache-from: type=gha
         cache-to: type=gha,mode=max
+
+    - name: Sync README to Docker Hub
+      if: github.event_name != 'pull_request'
+      run: |
+        TOKEN=$(curl -s -X POST https://hub.docker.com/v2/users/login/ \
+          -H "Content-Type: application/json" \
+          -d "{\"username\":\"${{ secrets.DOCKER_HUB_USERNAME }}\",\"password\":\"${{ secrets.DOCKER_HUB_PASSWORD }}\"}" | jq -r .token)
+        if [ -z "${TOKEN}" ] || [ "${TOKEN}" = "null" ]; then
+          echo "Docker Hub 登录失败，跳过 README 同步"
+          exit 0
+        fi
+        jq -Rs '.' README.md > /tmp/readme.json
+        curl -s -X PATCH https://hub.docker.com/v2/repositories/lsw951753/mihomo-sub/ \
+          -H "Content-Type: application/json" \
+          -H "Authorization: JWT ${TOKEN}" \
+          -d "{\"full_description\":$(cat /tmp/readme.json)}"
+        echo "README 同步完成"

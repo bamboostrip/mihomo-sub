@@ -23,13 +23,20 @@ if [ ! -d "${CONFIG_DIR}/ui" ] || [ -z "$(ls -A "${CONFIG_DIR}/ui" 2>/dev/null)"
 fi
 
 # 复制预下载的地理库文件（避免启动时直连 GitHub 超时）
-if [ ! -f "${CONFIG_DIR}/geoip.metadb" ] && [ -f "${INIT_DIR}/geoip.metadb" ]; then
-    cp "${INIT_DIR}/geoip.metadb" "${CONFIG_DIR}/geoip.metadb"
-    echo "🗺 初始化 GeoIP 数据库"
+# 如果已有文件太小（<100KB，说明损坏），也重新复制
+if [ -f "${INIT_DIR}/geoip.metadb" ]; then
+    existing_size=$(wc -c < "${CONFIG_DIR}/geoip.metadb" 2>/dev/null || echo 0)
+    if [ "${existing_size}" -lt 102400 ]; then
+        cp "${INIT_DIR}/geoip.metadb" "${CONFIG_DIR}/geoip.metadb"
+        echo "🗺 初始化 GeoIP 数据库"
+    fi
 fi
-if [ ! -f "${CONFIG_DIR}/geosite.dat" ] && [ -f "${INIT_DIR}/geosite.dat" ]; then
-    cp "${INIT_DIR}/geosite.dat" "${CONFIG_DIR}/geosite.dat"
-    echo "🗺 初始化 GeoSite 数据库"
+if [ -f "${INIT_DIR}/geosite.dat" ]; then
+    existing_size=$(wc -c < "${CONFIG_DIR}/geosite.dat" 2>/dev/null || echo 0)
+    if [ "${existing_size}" -lt 102400 ]; then
+        cp "${INIT_DIR}/geosite.dat" "${CONFIG_DIR}/geosite.dat"
+        echo "🗺 初始化 GeoSite 数据库"
+    fi
 fi
 
 # 初始化订阅列表文件

@@ -36,10 +36,14 @@ RUN echo 'mixed-port: 7890' > /usr/share/mihomo-init/config.yaml && \
     echo 'external-controller: 0.0.0.0:9090' >> /usr/share/mihomo-init/config.yaml
 
 # 预下载 GeoIP/GeoSite 数据库，避免启动时在国内直连 GitHub 超时
-RUN wget -O /usr/share/mihomo-init/geoip.metadb \
+RUN wget -nv --retry-connrefused --tries=5 --timeout=60 \
+        -O /usr/share/mihomo-init/geoip.metadb \
         https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb && \
-    wget -O /usr/share/mihomo-init/geosite.dat \
-        https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat
+    [ "$(wc -c < /usr/share/mihomo-init/geoip.metadb)" -gt 1048576 ] || { echo "geoip.metadb download incomplete"; exit 1; } && \
+    wget -nv --retry-connrefused --tries=5 --timeout=60 \
+        -O /usr/share/mihomo-init/geosite.dat \
+        https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat && \
+    [ "$(wc -c < /usr/share/mihomo-init/geosite.dat)" -gt 1048576 ] || { echo "geosite.dat download incomplete"; exit 1; }
 
 # 安装管理页面
 RUN mkdir -p /usr/share/mihomo-mgr/cgi-bin

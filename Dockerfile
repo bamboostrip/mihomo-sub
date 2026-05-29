@@ -36,14 +36,18 @@ RUN echo 'mixed-port: 7890' > /usr/share/mihomo-init/config.yaml && \
     echo 'external-controller: 0.0.0.0:9090' >> /usr/share/mihomo-init/config.yaml
 
 # 预下载 GeoIP/GeoSite 数据库，避免启动时在国内直连 GitHub 超时
-RUN wget -nv --retry-connrefused --tries=5 --timeout=60 \
-        -O /usr/share/mihomo-init/geoip.metadb \
-        https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb && \
-    [ "$(wc -c < /usr/share/mihomo-init/geoip.metadb)" -gt 102400 ] || { echo "geoip.metadb download incomplete"; exit 1; } && \
-    wget -nv --retry-connrefused --tries=5 --timeout=60 \
-        -O /usr/share/mihomo-init/geosite.dat \
-        https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat && \
-    [ "$(wc -c < /usr/share/mihomo-init/geosite.dat)" -gt 102400 ] || { echo "geosite.dat download incomplete"; exit 1; }
+# busybox wget 不支持 --retry-connrefused，用 shell 循环做重试
+RUN for f in geoip.metadb geosite.dat; do \
+        ok=false; \
+        for i in 1 2 3 4 5; do \
+            wget -q -T 60 -O "/usr/share/mihomo-init/${f}" \
+                "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/${f}" && \
+            [ "$(wc -c < "/usr/share/mihomo-init/${f}")" -gt 102400 ] && ok=true && break; \
+            echo "retry ${i}/5: ${f}"; \
+            sleep 2; \
+        done; \
+        $ok || { echo "failed to download ${f}"; exit 1; }; \
+    done
 
 # 安装管理页面
 RUN mkdir -p /usr/share/mihomo-mgr/cgi-bin

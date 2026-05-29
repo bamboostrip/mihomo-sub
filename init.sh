@@ -22,6 +22,16 @@ if [ ! -d "${CONFIG_DIR}/ui" ] || [ -z "$(ls -A "${CONFIG_DIR}/ui" 2>/dev/null)"
     echo "🎨 初始化 Web 面板"
 fi
 
+# 复制预下载的地理库文件（避免启动时直连 GitHub 超时）
+if [ ! -f "${CONFIG_DIR}/geoip.metadb" ] && [ -f "${INIT_DIR}/geoip.metadb" ]; then
+    cp "${INIT_DIR}/geoip.metadb" "${CONFIG_DIR}/geoip.metadb"
+    echo "🗺 初始化 GeoIP 数据库"
+fi
+if [ ! -f "${CONFIG_DIR}/geosite.dat" ] && [ -f "${INIT_DIR}/geosite.dat" ]; then
+    cp "${INIT_DIR}/geosite.dat" "${CONFIG_DIR}/geosite.dat"
+    echo "🗺 初始化 GeoSite 数据库"
+fi
+
 # 初始化订阅列表文件
 if [ ! -f "${SUB_URLS_FILE}" ]; then
     if [ -n "${sub_url}" ]; then

@@ -84,6 +84,8 @@ docker run -d \
 | `sub_urls.txt` | 订阅链接列表（一行一个） |
 | `schedule.conf` | 定时策略 (`15min` / `hourly` / `daily`) |
 | `user_agent.txt` | 自定义 User-Agent（一行，可选） |
+| `geoip.metadb` | GeoIP 数据库（首次启动自动复制，可选） |
+| `geosite.dat` | GeoSite 数据库（首次启动自动复制，可选） |
 | `config.yaml` | mihomo 代理配置（自动生成） |
 | `log.txt` | 更新日志 |
 

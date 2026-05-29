@@ -35,6 +35,12 @@ RUN echo 'mixed-port: 7890' > /usr/share/mihomo-init/config.yaml && \
     echo 'allow-lan: true' >> /usr/share/mihomo-init/config.yaml && \
     echo 'external-controller: 0.0.0.0:9090' >> /usr/share/mihomo-init/config.yaml
 
+# 预下载 GeoIP/GeoSite 数据库，避免启动时在国内直连 GitHub 超时
+RUN wget -O /usr/share/mihomo-init/geoip.metadb \
+        https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb && \
+    wget -O /usr/share/mihomo-init/geosite.dat \
+        https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat
+
 # 安装管理页面
 RUN mkdir -p /usr/share/mihomo-mgr/cgi-bin
 COPY mgr/index.html /usr/share/mihomo-mgr/index.html

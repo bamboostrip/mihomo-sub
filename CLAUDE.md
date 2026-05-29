@@ -72,6 +72,8 @@ check_schedule（非 --now 时检查 last_run 时间戳）
 | `sub_urls.txt` | 管理页面/CGI | 订阅 URL，一行一个，支持 # 注释 |
 | `schedule.conf` | 管理页面/CGI | `15min` / `hourly` / `daily` |
 | `user_agent.txt` | 手动创建 | 自定义 UA，默认 `clash-verge/v2.5.1` |
+| `geoip.metadb` | Dockerfile/init.sh | GeoIP 库，预下载避免启动时直连 GitHub |
+| `geosite.dat` | Dockerfile/init.sh | 规则集，预下载避免启动时直连 GitHub |
 | `config.yaml` | sub.sh | mihomo 代理配置，每次刷新重写 |
 | `log.txt` | sub.sh | 更新日志，超 1MB 自动截断 |
 | `last_run` | sub.sh | Unix 时间戳 |
@@ -88,6 +90,7 @@ check_schedule（非 --now 时检查 last_run 时间戳）
 ## 注意事项
 
 - **subconverter 的 `ua` 参数不生效** — 这个 fork 会忽略它，始终用 `curl/8.19.0`。sub.sh 已改为 curl 直接下载 + 检测 Clash 格式跳过 subconverter。兜底路径（非 Clash 格式订阅）仍可能受 UA 问题影响
+- **GeoIP/GeoSite 文件已预下载** — Dockerfile 构建时从 GitHub 下载，init.sh 复制到配置目录。避免启动时 mihomo 直连 GitHub 下载超时（国内环境常见问题）
 - **手动刷新会重置 `last_run`** — 点"立即刷新"后，下次定时刷新会被推迟一个完整周期
 - **`printf '%s'` 不用 `%b`** — sub.sh 的 config 生成全部用 `%s`，防止订阅数据中的字面量 `\n` 被错误转义
 - **CHMOD 必须** — CGI 脚本必须有执行权限，Dockerfile 中已 `chmod +x`

@@ -107,9 +107,24 @@ echo "🚀 启动 mihomo..."
 sleep 2
 
 # 等待 mihomo 就绪
+# 注意：设置 SECRET 后无鉴权请求返回 401，curl -f 会判失败，
+# 所以探测必须带 Authorization 头；同时探测 /version 端点
+# （根路径 / 行为不可靠），与 healthcheck.sh 保持一致
 mihomo_ready=false
 for i in $(seq 1 10); do
-    if curl_local -sf --max-time 3 http://127.0.0.1:9090 > /dev/null 2>&1; then
+    probe_ok=false
+    if [ -n "${SECRET}" ]; then
+        if curl_local -sf --max-time 3 -H "Authorization: Bearer ${SECRET}" \
+            http://127.0.0.1:9090/version > /dev/null 2>&1; then
+            probe_ok=true
+        fi
+    else
+        if curl_local -sf --max-time 3 \
+            http://127.0.0.1:9090/version > /dev/null 2>&1; then
+            probe_ok=true
+        fi
+    fi
+    if $probe_ok; then
         echo "✅ mihomo 已就绪"
         mihomo_ready=true
         break

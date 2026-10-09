@@ -262,6 +262,28 @@ fi
 # 构建最终配置文件（printf %s 不解释转义，订阅数据安全）
 # secret 为空时写入空字符串 = 无密码（保持旧行为）；设置后面板与 API 需要鉴权
 # ---------------------------
+# 多订阅合并去重：同名节点只保留第一次出现
+# （mihomo 要求 proxies 内 name 唯一，重名会导致重载 400 被拒）
+if [ -n "${all_proxies}" ]; then
+    proxy_before=$(printf '%s' "${all_proxies}" | grep -cE '^  - name: ' || true)
+    all_proxies=$(printf '%s' "${all_proxies}" | awk '
+        /^  - name: / {
+            nm=$0
+            sub(/^  - name: /, "", nm)
+            gsub(/^["]|["]$/, "", nm)
+            gsub(/^ +| +$/, "", nm)
+            if (nm in seen) { skip=1; next }
+            seen[nm]=1; skip=0; print; next
+        }
+        skip { next }
+        { print }
+    ')
+    proxy_after=$(printf '%s' "${all_proxies}" | grep -cE '^  - name: ' || true)
+    proxy_dedup=$((proxy_before - proxy_after))
+    if [ "${proxy_dedup}" -gt 0 ]; then
+        log="${log}已去除 ${proxy_dedup} 个重名节点\n\t"
+    fi
+fi
 SECRET_ESC=$(yaml_escape "${SECRET}")
 {
     printf '%s\n' 'mixed-port: 7890'
@@ -349,10 +371,11 @@ log="${log}配置文件生成成功 (${success_count}/${sub_count} 个订阅) �
 # 配置重新加载（带 SECRET 鉴权 + 失败回滚，移植自上游 3.0.0）
 # ---------------------------
 log="${log}配置重新加载...\n\t"
+reload_body="${TEMP_DIR}/reload_body.txt"
 if [ -n "${SECRET}" ]; then
-    reload_response=$(curl_local --max-time 15 -w "%{http_code}" -o /dev/null -X PUT "http://127.0.0.1:9090/configs?force=true" -H "Content-Type: application/json" -H "Authorization: Bearer ${SECRET}" -d '{"path":"","payload":""}')
+    reload_response=$(curl_local --max-time 15 -w "%{http_code}" -o "${reload_body}" -X PUT "http://127.0.0.1:9090/configs?force=true" -H "Content-Type: application/json" -H "Authorization: Bearer ${SECRET}" -d '{"path":"","payload":""}')
 else
-    reload_response=$(curl_local --max-time 15 -w "%{http_code}" -o /dev/null -X PUT "http://127.0.0.1:9090/configs?force=true" -H "Content-Type: application/json" -d '{"path":"","payload":""}')
+    reload_response=$(curl_local --max-time 15 -w "%{http_code}" -o "${reload_body}" -X PUT "http://127.0.0.1:9090/configs?force=true" -H "Content-Type: application/json" -d '{"path":"","payload":""}')
 fi
 reload_exit_code=$?
 
@@ -360,7 +383,10 @@ if [ "${reload_exit_code}" -ne 0 ]; then
     log="${log}Warning: mihomo 服务未启动，跳过热重载（启动后会读取新配置）\n\t"
     cp -f "${CONFIG_FILE}" "${GOOD_FILE}"
 elif [ "${reload_response:-0}" -ne 204 ] && [ "${reload_response:-0}" -ne 200 ]; then
-    log="${log}Error: 配置重新加载失败，响应码: ${reload_response}，尝试回滚\n\t"
+    reload_msg=$(head -c 300 "${reload_body}" 2>/dev/null | tr '\n' ' ')
+    log="${log}Error: 配置重新加载失败，响应码: ${reload_response} ${reload_msg}，尝试回滚\n\t"
+    cp -f "${CONFIG_FILE}" "${CONFIG_FILE}.bad"
+    log="${log}失败配置已另存为 config.yaml.bad 供排查\n\t"
     if [ -f "${GOOD_FILE}" ]; then
         cp -f "${GOOD_FILE}" "${CONFIG_FILE}"
         if [ -n "${SECRET}" ]; then

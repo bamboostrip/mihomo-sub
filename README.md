@@ -97,6 +97,7 @@ docker run -d \
 | `geosite.dat` | GeoSite 数据库（首次启动自动复制，可选） |
 | `config.yaml` | mihomo 代理配置（自动生成） |
 | `config.yaml.good` | 上一份刷新成功的配置（失败自动回滚用） |
+| `config.yaml.bad` | 重载被拒时的失败配置（排查用） |
 | `overlay.yaml` | 可选自定义覆盖层（DNS / 规则，不存在则跳过） |
 | `.secret` | `SECRET` 持久化文件（设置后自动生成） |
 | `log.txt` | 更新日志 |

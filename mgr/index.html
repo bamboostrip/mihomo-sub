@@ -76,13 +76,16 @@ h1 {
 
 .sub-list { list-style: none; }
 .sub-item {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    display: block;
     padding: 10px 0;
     border-bottom: 1px solid var(--border);
 }
 .sub-item:last-child { border-bottom: none; }
+.sub-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
 .sub-url {
     flex: 1;
     font-size: 0.85rem;
@@ -119,6 +122,23 @@ h1 {
 .sub-edit:hover {
     background: var(--accent);
     color: #fff;
+}
+
+.use-bar {
+    height: 4px;
+    background: var(--bg);
+    border-radius: 2px;
+    margin: 8px 0 4px;
+    overflow: hidden;
+}
+.use-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+}
+.use-text {
+    font-size: 0.72rem;
+    color: var(--text-dim);
 }
 .sub-del {
     background: none;
@@ -351,22 +371,57 @@ async function loadSubs() {
         li.className = 'sub-item';
         let badge = alias ? '<span class="sub-alias">' + escHtml(alias) + '</span>' : '';
         li.innerHTML =
+            '<div class="sub-row">' +
             badge +
             '<span class="sub-url">' + escHtml(url) + '</span>' +
             '<button class="sub-edit" onclick="renSub(this)">改名</button>' +
-            '<button class="sub-del" onclick="delSub(this)">删除</button>';
+            '<button class="sub-del" onclick="delSub(this)">删除</button>' +
+            '</div><div class="sub-use"></div>';
         li.querySelector('.sub-del').dataset.url = url;
         li.querySelector('.sub-edit').dataset.url = url;
         li.querySelector('.sub-edit').dataset.alias = alias;
         list.appendChild(li);
     });
     loadStatus();
+    loadUsage();
 }
 
 function escHtml(s) {
     let d = document.createElement('div');
     d.textContent = s;
     return d.innerHTML;
+}
+
+function fmtBytes(b) {
+    if (!b) return '0 MB';
+    let gb = b / 1073741824;
+    if (gb >= 1) return gb.toFixed(1) + ' GB';
+    return (b / 1048576).toFixed(1) + ' MB';
+}
+
+// 加载各订阅流量（Verge 式的剩余额度条）
+async function loadUsage() {
+    let data = await api('usage');
+    if (!data.usage) return;
+    let map = {};
+    data.usage.forEach(u => { map[u.url] = u; });
+    document.querySelectorAll('#subList .sub-item').forEach(li => {
+        let box = li.querySelector('.sub-use');
+        if (!box) return;
+        let url = li.querySelector('.sub-del').dataset.url;
+        let u = map[url];
+        if (!u || (!u.upload && !u.download && !u.total)) {
+            box.innerHTML = '<div class="use-text">流量信息暂无（下次刷新后显示）</div>';
+            return;
+        }
+        let used = (u.upload || 0) + (u.download || 0);
+        let pct = u.total > 0 ? Math.min(100, used / u.total * 100) : 0;
+        let exp = u.expire > 0 ? ' · 到期 ' + new Date(u.expire * 1000).toLocaleDateString() : '';
+        let totalTxt = u.total > 0 ? ' / ' + fmtBytes(u.total) : '（不限量）';
+        box.innerHTML =
+            '<div class="use-bar"><div class="use-fill" style="width:' + pct.toFixed(1) + '%"></div></div>' +
+            '<div class="use-text">已用 ' + fmtBytes(used) + totalTxt + exp + '</div>';
+    });
 }
 
 // 添加订阅（可带别名，别名会作为节点名前缀用于区分流量归属）
@@ -447,6 +502,7 @@ async function doRefresh() {
         tries++;
         await loadLogs();
         await loadStatus();
+        await loadUsage();
         if (tries >= 60) {
             clearInterval(poller);
             finishRefresh(btn, icon);

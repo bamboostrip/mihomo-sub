@@ -63,6 +63,7 @@ check_schedule（非 --now 时检查 last_run 时间戳）
 | `add` | POST | 添加订阅 (body: url=...&alias=...，别名可选) |
 | `delete` | POST | 删除订阅 (body: url=...)，按 URL 部分匹配 |
 | `rename` | POST | 修改别名 (body: url=...&alias=...，留空清除) |
+| `usage` | GET | 各订阅流量 `[{url,alias,upload,download,total,expire}]` |
 | `refresh` | GET | 后台触发 sub.sh --now |
 | `schedule` | GET/POST | 查看/修改定时策略 |
 | `logs` | GET | 最近 100 行日志 |
@@ -82,6 +83,7 @@ check_schedule（非 --now 时检查 last_run 时间戳）
 | `config.yaml` | sub.sh | mihomo 代理配置，每次刷新重写（含 secret 行） |
 | `config.yaml.good` | sub.sh | 上一份成功配置，失败回滚用 |
 | `log.txt` | sub.sh | 更新日志，超 1MB 自动截断 |
+| `usage/` | sub.sh | 流量存档 `usage/<md5(url)[:12]>.dat`（TAB 分隔 up/down/total/expire），失败保留旧值 |
 | `last_run` | sub.sh | Unix 时间戳 |
 
 ## 依赖版本

@@ -209,6 +209,49 @@ case "${action}" in
         ;;
 
     # ---------------------------
+    # 各订阅流量信息（upload/download/total/expire，字节数）
+    # 数据由 sub.sh 每次下载时解析 subscription-userinfo 存档
+    # ---------------------------
+    usage)
+        printf '{"usage":['
+        first=true
+        if [ -f "${SUB_URLS_FILE}" ]; then
+            while IFS= read -r line || [ -n "${line}" ]; do
+                case "${line}" in
+                    ""|"#"*) continue ;;
+                esac
+                case "${line}" in
+                    *"${TAB}"*)
+                        alias="${line%%"${TAB}"*}"
+                        url="${line#*"${TAB}"}"
+                        ;;
+                    *)
+                        alias=""
+                        url="${line}"
+                        ;;
+                esac
+                [ -z "${url}" ] && continue
+                ukey=$(printf '%s' "${url}" | md5sum 2>/dev/null | cut -c1-12)
+                up=0; down=0; total=0; exp=0
+                if [ -n "${ukey}" ] && [ -f "${CONFIG_DIR}/usage/${ukey}.dat" ]; then
+                    IFS="$(printf '\t')" read -r up down total exp < "${CONFIG_DIR}/usage/${ukey}.dat" 2>/dev/null
+                    up=${up:-0}; down=${down:-0}; total=${total:-0}; exp=${exp:-0}
+                fi
+                if $first; then
+                    first=false
+                else
+                    printf ','
+                fi
+                escaped_url=$(echo "${url}" | sed 's/\\/\\\\/g; s/"/\\"/g')
+                escaped_alias=$(echo "${alias}" | sed 's/\\/\\\\/g; s/"/\\"/g')
+                printf '{"url":"%s","alias":"%s","upload":%d,"download":%d,"total":%d,"expire":%d}' \
+                    "${escaped_url}" "${escaped_alias}" "${up}" "${down}" "${total}" "${exp}"
+            done < "${SUB_URLS_FILE}"
+        fi
+        printf ']}\n'
+        ;;
+
+    # ---------------------------
     # 获取日志
     # ---------------------------
     logs)

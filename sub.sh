@@ -38,9 +38,11 @@ yaml_escape() {
 }
 
 # 直连下载：绕开代理（避免经由自身 7890 循环）+ 重试
+# --connect-timeout 10 让建连阶段（DNS/TCP/TLS）卡住时快速失败，
+# 死链单次最多烧 ~10s×重试，而不是每次都吃满 30s 总超时
 curl_direct() {
     env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY \
-        curl -sL --retry 3 --retry-delay 2 --max-time 30 "$@"
+        curl -sL --connect-timeout 10 --retry 2 --retry-delay 2 --max-time 30 "$@"
 }
 
 # 本机请求：同样绕开代理，避免 HEALTHCHECK/热重载被代理劫持
@@ -64,6 +66,48 @@ FORCE=false
 if [ "$1" = "--now" ]; then
     FORCE=true
 fi
+
+# 进度输出：仅手动/启动触发（--now）时打印到 stdout（docker logs 可见），
+# 定时任务输出重定向到了日志文件，靠文件日志即可，避免重复
+say() {
+    if $FORCE; then
+        echo "$1"
+    fi
+}
+
+# ---------------------------
+# 流量信息：解析订阅响应头 subscription-userinfo 存档，
+# 供管理页展示各账号剩余额度（upload/download/total/expire）
+# ---------------------------
+parse_usage() {
+    hdr="$1"
+    url="$2"
+    [ -f "${hdr}" ] || return 0
+    info=$(grep -i '^subscription-userinfo:' "${hdr}" 2>/dev/null | head -1 | cut -d: -f2-)
+    [ -z "${info}" ] && return 0
+    u_up=$(printf '%s' "${info}" | grep -io 'upload=[0-9]*' | head -1 | cut -d= -f2)
+    u_down=$(printf '%s' "${info}" | grep -io 'download=[0-9]*' | head -1 | cut -d= -f2)
+    u_total=$(printf '%s' "${info}" | grep -io 'total=[0-9]*' | head -1 | cut -d= -f2)
+    u_exp=$(printf '%s' "${info}" | grep -io 'expire=[0-9]*' | head -1 | cut -d= -f2)
+    if [ -z "${u_up}${u_down}${u_total}" ]; then
+        return 0
+    fi
+    ukey=$(printf '%s' "${url}" | md5sum 2>/dev/null | cut -c1-12)
+    [ -z "${ukey}" ] && return 0
+    mkdir -p "${CONFIG_DIR}/usage"
+    printf '%s\t%s\t%s\t%s\n' "${u_up:-0}" "${u_down:-0}" "${u_total:-0}" "${u_exp:-0}" > "${CONFIG_DIR}/usage/${ukey}.dat"
+    used=$(( ${u_up:-0} + ${u_down:-0} ))
+    if [ "${u_total:-0}" -gt 0 ]; then
+        log="${log}流量统计：已用 $(hum "${used}") / 共 $(hum "${u_total}")\n\t"
+    else
+        log="${log}流量统计：已用 $(hum "${used}")（不限量）\n\t"
+    fi
+}
+
+# 人性化字节数（GB/MB），用于日志
+hum() {
+    awk -v b="${1:-0}" 'BEGIN { if (b>=1073741824) printf "%.1fGB", b/1073741824; else printf "%.1fMB", b/1048576 }'
+}
 
 # ---------------------------
 # 输出日志并退出
@@ -257,26 +301,35 @@ while IFS= read -r line || [ -n "${line}" ]; do
     temp_file="${TEMP_DIR}/sub_${sub_count}.yml"
 
     log="${log}第 ${sub_count} 个订阅${log_tag}获取中...\n\t"
+    say "➡️ 订阅 ${sub_count}${log_tag}开始获取..."
 
     # curl 直接下载原始订阅，正确设置 User-Agent
     # 绕开代理 + 跟随跳转 + 检查 HTTP 状态码（移植自上游 3.0.0 的健壮下载）
+    # -D 存响应头，用于解析 subscription-userinfo 流量信息
     curl_exit=0
-    http_code=$(curl_direct -w "%{http_code}" -H "User-Agent: ${SUB_UA}" -o "${raw_file}" "${sub_url}" 2>/dev/null) || curl_exit=$?
+    hdr_file="${TEMP_DIR}/hdr_${sub_count}.txt"
+    http_code=$(curl_direct -D "${hdr_file}" -w "%{http_code}" -H "User-Agent: ${SUB_UA}" -o "${raw_file}" "${sub_url}" 2>/dev/null) || curl_exit=$?
 
     if [ "${curl_exit}" -ne 0 ]; then
         log="${log}Error: 订阅 ${sub_count}${log_tag} 下载失败，退出码: ${curl_exit}\n\t"
+        say "❌ 订阅 ${sub_count}${log_tag}下载失败（退出码 ${curl_exit}）"
         continue
     fi
 
     if [ "${http_code:-0}" -ne 200 ]; then
         log="${log}Error: 订阅 ${sub_count}${log_tag} 下载失败，响应码: ${http_code}\n\t"
+        say "❌ 订阅 ${sub_count}${log_tag}下载失败（HTTP ${http_code}）"
         continue
     fi
 
     if [ ! -s "${raw_file}" ]; then
         log="${log}Error: 订阅 ${sub_count}${log_tag} 返回空内容\n\t"
+        say "❌ 订阅 ${sub_count}${log_tag}返回空内容"
         continue
     fi
+
+    # 解析流量信息存档（管理页展示剩余额度），无头则跳过
+    parse_usage "${hdr_file}" "${sub_url}"
 
     # 判断原始内容格式：如果已经是 clash YAML 则直接使用（允许行首空格）
     if grep -qE '^[[:space:]]*proxies:' "${raw_file}" 2>/dev/null; then
@@ -332,14 +385,17 @@ while IFS= read -r line || [ -n "${line}" ]; do
     if [ -n "${proxies}" ] || [ -n "${rules}" ]; then
         success_count=$((success_count + 1))
         log="${log}订阅 ${sub_count}${log_tag} 更新成功\n\t"
+        say "✅ 订阅 ${sub_count}${log_tag}更新成功"
     else
         log="${log}订阅 ${sub_count}${log_tag} 无有效节点\n\t"
+        say "⚠️ 订阅 ${sub_count}${log_tag}无有效节点"
     fi
 
 done < "${SUB_URLS_FILE}"
 
 if [ "${success_count}" -eq 0 ]; then
     log="${log}Error: 所有订阅均失败，保留现有配置\n\t"
+    say "❌ 所有订阅均失败，已保留原配置"
     restore_good_config
     sub_end 1
 fi
@@ -455,6 +511,7 @@ if [ ! -s "${CONFIG_FILE}" ]; then
 fi
 
 log="${log}配置文件生成成功 (${success_count}/${sub_count} 个订阅) ✅\n\t"
+say "✅ 配置文件生成成功 (${success_count}/${sub_count} 个订阅)"
 
 # ---------------------------
 # 配置重新加载（带 SECRET 鉴权 + 失败回滚，移植自上游 3.0.0）

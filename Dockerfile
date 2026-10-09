@@ -1,17 +1,29 @@
-FROM metacubex/mihomo:v1.19.25
+FROM metacubex/mihomo:v1.19.32
 
 RUN apk add --no-cache jq curl busybox-extras
 
+# 安装 yq，用于 overlay.yaml 合并（不存在则跳过，不影响原有多订阅流程）
+ARG TARGETARCH
+ARG TARGETVARIANT
+RUN case "${TARGETARCH}${TARGETVARIANT}" in \
+        "arm64") YQ_BIN="yq_linux_arm64" ;; \
+        "armv7") YQ_BIN="yq_linux_arm" ;; \
+        "386") YQ_BIN="yq_linux_386" ;; \
+        "amd64"|*) YQ_BIN="yq_linux_amd64" ;; \
+    esac && \
+    wget -O /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/v4.44.3/${YQ_BIN}" && \
+    chmod +x /usr/local/bin/yq
+
 # 安装 metacubexd Web 面板（存到初始化目录，运行时由 init.sh 复制）
-RUN wget -O /tmp/metacubexd.tgz https://github.com/MetaCubeX/metacubexd/releases/download/v1.248.7/compressed-dist.tgz && \
+# v1.273.1 (2026-09-10)：修复桌面端原生 TUN helper 启动与恢复
+RUN wget -O /tmp/metacubexd.tgz https://github.com/MetaCubeX/metacubexd/releases/download/v1.273.1/compressed-dist.tgz && \
     tar -tzf /tmp/metacubexd.tgz > /dev/null 2>&1 || { echo "metacubexd download corrupted"; exit 1; } && \
     mkdir -p /usr/share/mihomo-init/ui && \
     tar -xzf /tmp/metacubexd.tgz -C /usr/share/mihomo-init/ui && \
     rm -rf /tmp/metacubexd.tgz
 
-# 安装 subconverter（多架构支持）
-ARG TARGETARCH
-ARG TARGETVARIANT
+# 安装 subconverter（MetaCubeX C++ 版 v0.9.2，多架构支持）
+# 上游 3.0.0 已从 asdlokj1qpi233 fork 切回 MetaCubeX 官方版，此处跟进
 RUN case "${TARGETARCH}${TARGETVARIANT}" in \
         "arm64") \
             SUBCONV_FILE="subconverter_aarch64.tar.gz" ;; \
@@ -24,7 +36,7 @@ RUN case "${TARGETARCH}${TARGETVARIANT}" in \
         *) \
             echo "Unsupported architecture: ${TARGETARCH}${TARGETVARIANT}"; exit 1 ;; \
     esac && \
-    wget -O /tmp/subconverter.tar.gz https://github.com/asdlokj1qpi233/subconverter/releases/download/v0.9.9/${SUBCONV_FILE} && \
+    wget -O /tmp/subconverter.tar.gz https://github.com/MetaCubeX/subconverter/releases/download/v0.9.2/${SUBCONV_FILE} && \
     tar -tzf /tmp/subconverter.tar.gz > /dev/null 2>&1 || { echo "subconverter download corrupted"; exit 1; } && \
     tar -xzf /tmp/subconverter.tar.gz -C / && \
     rm -rf /tmp/subconverter.tar.gz
@@ -55,16 +67,20 @@ COPY mgr/index.html /usr/share/mihomo-mgr/index.html
 COPY mgr/cgi-bin/api /usr/share/mihomo-mgr/cgi-bin/api
 RUN chmod +x /usr/share/mihomo-mgr/cgi-bin/api
 
-# 安装启动脚本和订阅脚本
+# 安装启动脚本、订阅脚本和健康检查
 COPY init.sh /init.sh
 COPY sub.sh /etc/periodic/15min/sub.sh
-RUN chmod +x /init.sh /etc/periodic/15min/sub.sh
+COPY healthcheck.sh /usr/local/bin/healthcheck.sh
+RUN chmod +x /init.sh /etc/periodic/15min/sub.sh /usr/local/bin/healthcheck.sh
 
-ENV sub_url=""
+# SECRET 为空 = 面板无密码（保持旧行为）；设置后 mihomo API 需要鉴权，
+# sub.sh 热重载与 HEALTHCHECK 会自动读取数据卷中的 .secret
+ENV sub_url="" \
+    SECRET=""
 
 EXPOSE 7890 9090 9091
 
 HEALTHCHECK --interval=120s --timeout=10s --retries=3 \
-    CMD curl -sf --max-time 5 http://127.0.0.1:9090 || exit 1
+    CMD ["/usr/local/bin/healthcheck.sh"]
 
 ENTRYPOINT ["/init.sh"]

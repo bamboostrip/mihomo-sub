@@ -26,14 +26,20 @@
 - **手动刷新** — 管理页面一键立即刷新订阅
 - **配置持久化** — 所有配置保存在 `/root/.config/mihomo/` 目录，映射到宿主机后镜像更新不丢失配置
 - **一键跳转** — 管理页面直接跳转 metacubexd 代理面板
+- **失败回滚** — 刷新失败自动恢复上一份可用配置（`config.yaml.good`，移植自上游 3.0.0）
+- **可选鉴权** — 设置 `SECRET` 后面板与 API 需要密钥，不设置则无密码（保持旧行为）
+- **可选覆盖层** — `overlay.yaml` 存在时自动深合并自定义 DNS / 规则（移植自上游 3.0.0，不存在则跳过）
 
 ## 内置工具
 
-- `mihomo` — 代理核心
-- `metacubexd` — Web 代理管理面板
-- `subconverter` — 本地订阅转换
-- `sub.sh` — 订阅更新脚本
-- 管理页面 — 订阅配置 Web 界面
+| 组件 | 版本 | 说明 |
+|------|------|------|
+| `mihomo` | v1.19.32（2026-09-30） | 代理核心，`metacubex/mihomo` 基础镜像 |
+| `metacubexd` | v1.273.1（2026-09-10） | Web 代理管理面板 |
+| `subconverter` | v0.9.2（MetaCubeX C++ 版） | 本地订阅转换（上游 3.0.0 已切回官方版本，不再用第三方 fork） |
+| `yq` | v4.44.3 | `overlay.yaml` 合并 |
+| `sub.sh` | — | 订阅更新脚本 |
+| 管理页面 | — | 订阅配置 Web 界面（`:9091`） |
 
 ## 服务端口
 
@@ -50,12 +56,15 @@
 ```yaml
 services:
   mihomo:
-    image: lsw951753/mihomo-sub:latest
+    # GHCR 免注册拉取（随仓库自动推送）；Docker Hub 需自行配置 secrets 后才有
+    image: ghcr.io/bamboostrip/mihomo-sub:latest
     container_name: mihomo-sub
     volumes:
       - ./mihomo-config:/root/.config/mihomo
     environment:
       - TZ=Asia/Shanghai
+      # 可选：设置后面板与 API 需要鉴权，不设置则无密码（仅建议局域网）
+      # - SECRET=change-me
     ports:
       - "7890:7890"
       - "9090:9090"
@@ -74,7 +83,7 @@ docker run -d \
   -p 9090:9090 \
   -p 9091:9091 \
   -e TZ=Asia/Shanghai \
-  lsw951753/mihomo-sub:latest
+  ghcr.io/bamboostrip/mihomo-sub:latest
 ```
 
 挂载 `./mihomo-config` 后，以下文件会持久化到宿主机，更新镜像不会丢失：
@@ -87,6 +96,9 @@ docker run -d \
 | `geoip.metadb` | GeoIP 数据库（首次启动自动复制，可选） |
 | `geosite.dat` | GeoSite 数据库（首次启动自动复制，可选） |
 | `config.yaml` | mihomo 代理配置（自动生成） |
+| `config.yaml.good` | 上一份刷新成功的配置（失败自动回滚用） |
+| `overlay.yaml` | 可选自定义覆盖层（DNS / 规则，不存在则跳过） |
+| `.secret` | `SECRET` 持久化文件（设置后自动生成） |
 | `log.txt` | 更新日志 |
 
 ### 环境变量
@@ -95,6 +107,7 @@ docker run -d \
 |------|------|------|
 | `TZ` | 推荐 | 时区，如 `Asia/Shanghai` |
 | `sub_url` | 否 | 初始订阅 URL（首次启动时写入 `sub_urls.txt`，之后通过管理页面管理） |
+| `SECRET` | 否 | 面板与 API 密钥；为空则无密码（默认），`off` 可显式关闭；设置后 metacubexd 面板需填入同一密钥 |
 
 ## 使用
 
@@ -110,6 +123,21 @@ docker run -d \
 ### 代理面板
 
 `http://<服务器IP>:9090/ui` — metacubexd 面板，管理代理规则、切换节点、查看连接等。
+如果设置了 `SECRET`，面板会要求输入密钥（与环境变量一致）；没设置则直接进入。
+
+### 自定义覆盖层（可选）
+
+在挂载目录里新建 `overlay.yaml`，每次刷新后会自动深合并到 `config.yaml`，
+适合放长期有效的 DNS、额外规则。`mixed-port` / `secret` / `external-controller` /
+`external-ui` 仍由脚本接管，不会被覆盖。示例：
+
+```yaml
+dns:
+  enable: true
+  enhanced-mode: fake-ip
+rules-prepend:
+  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
+```
 
 ### 手动执行订阅更新
 
@@ -127,7 +155,32 @@ docker exec mihomo-sub /etc/periodic/15min/sub.sh --now
 
 可以。容器启动时检测到缺失的文件会自动从内置模板生成，空目录挂载完全没问题。
 
+**Q: 设置 SECRET 后面板要密码，管理页面（:9091）呢？**
+
+管理页面不需要密码，只有 `:9090` 的 metacubexd 面板和 API 需要。
+密钥持久化在数据卷的 `.secret` 文件里，重启容器不换密钥；去掉 `SECRET`
+环境变量也不会自动清除旧密钥，如需关闭请设 `SECRET=off` 后重启一次。
+
+**Q: 刷新失败会把配置搞坏吗？**
+
+不会。每次成功会另存 `config.yaml.good`，失败自动回滚，不会用坏配置覆盖。
+
+## 与上游的关系
+
+本项目 fork 自 `lsw951753/mihomo-sub` 的 Web 管理页面方案（多订阅 `:9091`），
+其上游是 `pure-white-ice-cream/mihomo-sub`。上游 3.0.0（`VERSION 3.0.0`）主要变化：
+
+- 默认密钥：留空生成随机 `SECRET`（破坏性变更，本 fork **未跟进**，留空仍为无密码）
+- 定时模型：`cron` 环境变量（本 fork **未跟进**，保留管理页面的 15min/hourly/daily）
+- 面板：metacubexd → Zashboard（本 fork **未跟进**，保留 metacubexd 并升级到 v1.273.1）
+- 单订阅 `sub_url` 用 `|` 分隔（本 fork **未跟进**，保留 `sub_urls.txt` 多订阅文件）
+
+已从 3.0.0 移植的 bug 修复：本机请求绕开代理（防自环）、下载重试与状态码校验、
+热重载失败回滚 `config.yaml.good`、`SECRET` 鉴权支持、`overlay.yaml` 合并、
+带鉴权的 HEALTHCHECK。网页多订阅功能不受影响。
+
 ## 源码和仓库
 
-- 源码: `https://github.com/pure-white-ice-cream/mihomo-sub`
-- Docker Hub: `https://hub.docker.com/r/purewhiteicecream/mihomo-sub`
+- 本仓库: `https://github.com/bamboostrip/mihomo-sub`
+- 镜像: `ghcr.io/bamboostrip/mihomo-sub`（自动推送；Docker Hub 需配置 secrets 后才有同名镜像）
+- 上游: `https://github.com/pure-white-ice-cream/mihomo-sub`

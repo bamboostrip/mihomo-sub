@@ -4,6 +4,44 @@ CONFIG_DIR="/root/.config/mihomo"
 INIT_DIR="/usr/share/mihomo-init"
 SUB_URLS_FILE="${CONFIG_DIR}/sub_urls.txt"
 SCHEDULE_FILE="${CONFIG_DIR}/schedule.conf"
+SECRET_FILE="${CONFIG_DIR}/.secret"
+mkdir -p "${CONFIG_DIR}"
+
+# 本机探测绕开代理（避免 http_proxy 指向自身 7890 时自环）
+curl_local() {
+    env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY \
+        curl "$@"
+}
+
+# ---------------------------
+# API 密钥持久化（移植自上游 3.0.0，但默认空 = 无密码，保持本 fork 旧行为）
+# 上游 3.0.0 留空会生成随机密钥（破坏性变更）；本 fork 留空即无密码，
+# 只有显式设置 SECRET 才启用鉴权，避免老用户升级后被锁在面板外。
+# ---------------------------
+case "${SECRET}" in
+    off|OFF|none|NONE|false|FALSE|disable|DISABLE|disabled|DISABLED)
+        SECRET=""
+        : > "${SECRET_FILE}"
+        ;;
+    "")
+        if [ -f "${SECRET_FILE}" ] && [ -s "${SECRET_FILE}" ]; then
+            SECRET=$(tr -d '[:space:]' < "${SECRET_FILE}" 2>/dev/null)
+        else
+            SECRET=""
+        fi
+        ;;
+    *)
+        mkdir -p "${CONFIG_DIR}"
+        printf '%s' "${SECRET}" > "${SECRET_FILE}"
+        chmod 600 "${SECRET_FILE}" 2>/dev/null || true
+        ;;
+esac
+export SECRET
+if [ -n "${SECRET}" ]; then
+    echo "🔑 已启用 API 密钥鉴权"
+else
+    echo "🔓 未设置 SECRET，面板无密码（仅建议局域网使用）"
+fi
 
 # ---------------------------
 # 配置文件初始化
@@ -14,6 +52,12 @@ mkdir -p "${CONFIG_DIR}"
 if [ ! -f "${CONFIG_DIR}/config.yaml" ]; then
     cp "${INIT_DIR}/config.yaml" "${CONFIG_DIR}/config.yaml"
     echo "📄 初始化 mihomo 配置"
+fi
+
+# 若设置了 SECRET 且配置中缺少 secret 行，补上（sub.sh 每次刷新也会强制写入）
+if [ -n "${SECRET}" ] && ! grep -qE '^[[:space:]]*secret:' "${CONFIG_DIR}/config.yaml" 2>/dev/null; then
+    SECRET_ESC=$(printf '%s' "${SECRET}" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    printf 'secret: "%s"\n' "${SECRET_ESC}" >> "${CONFIG_DIR}/config.yaml"
 fi
 
 if [ ! -d "${CONFIG_DIR}/ui" ] || [ -z "$(ls -A "${CONFIG_DIR}/ui" 2>/dev/null)" ]; then
@@ -65,7 +109,7 @@ sleep 2
 # 等待 mihomo 就绪
 mihomo_ready=false
 for i in $(seq 1 10); do
-    if curl -sf --max-time 3 http://127.0.0.1:9090 > /dev/null 2>&1; then
+    if curl_local -sf --max-time 3 http://127.0.0.1:9090 > /dev/null 2>&1; then
         echo "✅ mihomo 已就绪"
         mihomo_ready=true
         break
@@ -93,7 +137,7 @@ sleep 2
 # ---------------------------
 subc_ready=false
 for i in $(seq 1 10); do
-    if curl -s -o /dev/null "http://127.0.0.1:25500/version" 2>/dev/null; then
+    if curl_local -s -o /dev/null "http://127.0.0.1:25500/version" 2>/dev/null; then
         echo "✅ subconverter 已就绪"
         subc_ready=true
         break

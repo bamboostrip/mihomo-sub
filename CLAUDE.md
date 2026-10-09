@@ -8,12 +8,13 @@ Docker 化的 mihomo（clash meta）代理方案，内置 Web 管理页面、多
 ├── Dockerfile              # 镜像构建，多架构支持 (amd64/arm64/armv7/386)
 ├── init.sh                 # 容器 ENTRYPOINT，初始化 + 启动所有服务
 ├── sub.sh                  # 订阅更新脚本，cron 每 15 分钟触发
+├── healthcheck.sh          # 健康检查（支持 SECRET 鉴权）
 ├── mgr/
 │   ├── index.html          # 管理页面 (暗色主题，单文件，:9091)
 │   └── cgi-bin/
 │       └── api             # CGI API 后端 (busybox-extras httpd)
 ├── .github/workflows/
-│   └── docker-image.yml    # CI/CD 多架构构建推送
+│   └── docker-image.yml    # CI/CD 多架构构建推送（GHCR 常开 + Docker Hub 可选）
 └── README.md
 ```
 
@@ -72,9 +73,12 @@ check_schedule（非 --now 时检查 last_run 时间戳）
 | `sub_urls.txt` | 管理页面/CGI | 订阅 URL，一行一个，支持 # 注释 |
 | `schedule.conf` | 管理页面/CGI | `15min` / `hourly` / `daily` |
 | `user_agent.txt` | 手动创建 | 自定义 UA，默认 `clash-verge/v2.5.1` |
+| `overlay.yaml` | 手动创建（可选） | 自定义覆盖层，不存在则跳过；受管字段不被覆盖 |
+| `.secret` | init.sh（SECRET 非空时） | API 密钥持久化；SECRET 为空则无此鉴权 |
 | `geoip.metadb` | Dockerfile/init.sh | GeoIP 库，预下载避免启动时直连 GitHub |
 | `geosite.dat` | Dockerfile/init.sh | 规则集，预下载避免启动时直连 GitHub |
-| `config.yaml` | sub.sh | mihomo 代理配置，每次刷新重写 |
+| `config.yaml` | sub.sh | mihomo 代理配置，每次刷新重写（含 secret 行） |
+| `config.yaml.good` | sub.sh | 上一份成功配置，失败回滚用 |
 | `log.txt` | sub.sh | 更新日志，超 1MB 自动截断 |
 | `last_run` | sub.sh | Unix 时间戳 |
 
@@ -82,14 +86,22 @@ check_schedule（非 --now 时检查 last_run 时间戳）
 
 | 组件 | 版本 | 来源 |
 |------|------|------|
-| mihomo | v1.19.25 | metacubex/mihomo 基础镜像 |
-| metacubexd | v1.248.7 | MetaCubeX releases |
-| subconverter | v0.9.9 | asdlokj1qpi233 fork |
+| mihomo | v1.19.32 | metacubex/mihomo 基础镜像 |
+| metacubexd | v1.273.1 | MetaCubeX releases（compressed-dist.tgz） |
+| subconverter | v0.9.2 | MetaCubeX 官方 C++ 版（上游 3.0.0 同款） |
+| yq | v4.44.3 | mikefarah/yq（overlay 合并） |
 | busybox-extras | Alpine | 提供 httpd CGI 服务 |
+
+## 上游 3.0.0 取舍（pure-white-ice-cream/mihomo-sub, VERSION 3.0.0）
+
+- 已移植：代理绕行、下载重试+状态码校验、失败回滚 good 配置、SECRET 鉴权、
+  overlay.yaml 合并、带鉴权 HEALTHCHECK、MetaCubeX subconverter v0.9.2。
+- 未移植（保护 `:9091` 网页多订阅）：`cron` 环境变量定时、`SECRET` 留空生成随机密钥、
+  Zashboard 面板、`sub_url` 用 `|` 分隔。SECRET 留空在本 fork = 无密码。
 
 ## 注意事项
 
-- **subconverter 的 `ua` 参数不生效** — 这个 fork 会忽略它，始终用 `curl/8.19.0`。sub.sh 已改为 curl 直接下载 + 检测 Clash 格式跳过 subconverter。兜底路径（非 Clash 格式订阅）仍可能受 UA 问题影响
+- **subconverter 直连优先** — sub.sh 先 curl 直接下载并正确设置 UA，内容已是 Clash YAML 则跳过转换；只有非 Clash 格式才走 subconverter 兜底。全部请求绕开代理变量，防自环
 - **GeoIP/GeoSite 文件已预下载** — Dockerfile 构建时从 GitHub 下载，init.sh 复制到配置目录。避免启动时 mihomo 直连 GitHub 下载超时（国内环境常见问题）
 - **手动刷新会重置 `last_run`** — 点"立即刷新"后，下次定时刷新会被推迟一个完整周期
 - **`printf '%s'` 不用 `%b`** — sub.sh 的 config 生成全部用 `%s`，防止订阅数据中的字面量 `\n` 被错误转义

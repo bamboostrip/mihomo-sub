@@ -1,5 +1,41 @@
 # Changelog
 
+## [Unreleased]
+
+### 升级
+
+- **mihomo** `v1.19.25` → `v1.19.32`（2026-09-30）
+- **metacubexd** `v1.248.7` → `v1.273.1`（2026-09-10，修复桌面端 TUN helper 启动与恢复）
+- **subconverter** `asdlokj1qpi233 v0.9.9` → `MetaCubeX v0.9.2` C++ 版（跟随上游 3.0.0 切回官方版本）
+- 新增 `yq v4.44.3`（用于 `overlay.yaml` 合并）
+
+### 新增（移植自上游 3.0.0，不影响 `:9091` 网页多订阅）
+
+- **失败回滚**：`config.yaml.good`，刷新/热重载失败自动恢复上一份可用配置
+- **可选鉴权**：`SECRET` 环境变量 + 数据卷 `.secret` 持久化；设置后面板与 API 需密钥，留空仍无密码（上游 3.0.0 留空生成随机密钥的破坏性变更**未跟进**，避免老用户被锁）
+- **可选覆盖层**：`overlay.yaml` 深合并（`rules-prepend` / `rules-append` 展平，受管字段不被覆盖）
+- **带鉴权的 HEALTHCHECK**：新增 `healthcheck.sh`，替代裸探 9090
+
+### 修复（移植自上游 3.0.0）
+
+- 本机/下载请求绕开 `http_proxy` 等代理变量，防止经由自身 7890 自环
+- 订阅下载加 `--retry` + 跟随跳转 + HTTP 状态码校验（原来只看 curl 退出码）
+- Clash 格式检测允许行首空格
+- 热重载同时接受 200/204，失败回滚而不是留下坏配置
+
+### 刻意未跟进（保护网页多订阅功能）
+
+- `cron` 环境变量定时模型 → 保留管理页面的 `15min` / `hourly` / `daily`
+- Zashboard 面板 → 保留 metacubexd
+- `sub_url` 用 `|` 分隔的单变量多订阅 → 保留 `sub_urls.txt` 文件 + 管理页面
+
+### CI
+
+- 镜像名硬编码 `lsw951753/mihomo-sub` → 跟随 `github.repository` 自动适配 fork
+- 新增 GHCR 推送（`ghcr.io/<owner>/<repo>`，免注册）；Docker Hub 改为可选（设置 secrets 才推送 + 同步 README）
+
+---
+
 ## [2.0.0] — 2026-05-29
 
 ### 新增

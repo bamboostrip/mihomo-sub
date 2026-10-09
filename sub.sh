@@ -5,6 +5,9 @@
 # ---------------------------
 CONFIG_DIR="/root/.config/mihomo"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
+GOOD_FILE="${CONFIG_DIR}/config.yaml.good"
+OVERLAY_FILE="${CONFIG_DIR}/overlay.yaml"
+SECRET_FILE="${CONFIG_DIR}/.secret"
 LOG_FILE="${CONFIG_DIR}/log.txt"
 SUB_URLS_FILE="${CONFIG_DIR}/sub_urls.txt"
 SCHEDULE_FILE="${CONFIG_DIR}/schedule.conf"
@@ -22,6 +25,37 @@ if [ -f "${UA_FILE}" ] && [ -s "${UA_FILE}" ]; then
 else
     SUB_UA="clash-verge/v2.5.1"
 fi
+
+# API 密钥：环境变量 > 数据卷持久化文件 > 空（无密码，保持旧行为）
+# 由 init.sh 在启动时写入 .secret，此处只做读取，支持容器重启后保持一致
+if [ -z "${SECRET}" ] && [ -f "${SECRET_FILE}" ]; then
+    SECRET=$(tr -d '[:space:]' < "${SECRET_FILE}" 2>/dev/null)
+fi
+
+# YAML 双引号转义（secret 写入配置时用）
+yaml_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# 直连下载：绕开代理（避免经由自身 7890 循环）+ 重试
+curl_direct() {
+    env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY \
+        curl -sL --retry 3 --retry-delay 2 --max-time 30 "$@"
+}
+
+# 本机请求：同样绕开代理，避免 HEALTHCHECK/热重载被代理劫持
+curl_local() {
+    env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY \
+        curl -s "$@"
+}
+
+# 回滚上一份可用配置（移植自上游 3.0.0：失败保留上一份可用配置）
+restore_good_config() {
+    if [ -f "${GOOD_FILE}" ]; then
+        cp -f "${GOOD_FILE}" "${CONFIG_FILE}"
+        log="${log}已恢复上一份可用配置\n\t"
+    fi
+}
 
 # ---------------------------
 # 检查是否为手动触发
@@ -145,11 +179,17 @@ while IFS= read -r line || [ -n "${line}" ]; do
     log="${log}第 ${sub_count} 个订阅获取中...\n\t"
 
     # curl 直接下载原始订阅，正确设置 User-Agent
+    # 绕开代理 + 跟随跳转 + 检查 HTTP 状态码（移植自上游 3.0.0 的健壮下载）
     curl_exit=0
-    curl -s --max-time 30 -H "User-Agent: ${SUB_UA}" -o "${raw_file}" "${sub_url}" || curl_exit=$?
+    http_code=$(curl_direct -w "%{http_code}" -H "User-Agent: ${SUB_UA}" -o "${raw_file}" "${sub_url}" 2>/dev/null) || curl_exit=$?
 
     if [ "${curl_exit}" -ne 0 ]; then
         log="${log}Error: 订阅 ${sub_count} 下载失败，退出码: ${curl_exit}\n\t"
+        continue
+    fi
+
+    if [ "${http_code:-0}" -ne 200 ]; then
+        log="${log}Error: 订阅 ${sub_count} 下载失败，响应码: ${http_code}\n\t"
         continue
     fi
 
@@ -158,21 +198,21 @@ while IFS= read -r line || [ -n "${line}" ]; do
         continue
     fi
 
-    # 判断原始内容格式：如果已经是 clash YAML 则直接使用
-    if grep -qE '^proxies:' "${raw_file}" 2>/dev/null; then
+    # 判断原始内容格式：如果已经是 clash YAML 则直接使用（允许行首空格）
+    if grep -qE '^[[:space:]]*proxies:' "${raw_file}" 2>/dev/null; then
         cp "${raw_file}" "${temp_file}"
         log="${log}订阅 ${sub_count} 已为 Clash 格式\n\t"
     else
-        # 非 Clash 格式，通过 subconverter 转换
+        # 非 Clash 格式，通过 subconverter 转换（本机请求同样绕开代理）
         encoded_sub_url=$(jq -rn --arg x "${sub_url}" '$x|@uri' 2>/dev/null)
         encoded_ua=$(jq -rn --arg x "${SUB_UA}" '$x|@uri' 2>/dev/null)
-        http_code=$(curl -s --max-time 30 -w "%{http_code}" -o "${temp_file}" "http://127.0.0.1:25500/sub?target=clash&url=${encoded_sub_url}&ua=${encoded_ua}")
+        http_code=$(curl_local --max-time 30 -w "%{http_code}" -o "${temp_file}" "http://127.0.0.1:25500/sub?target=clash&url=${encoded_sub_url}&ua=${encoded_ua}")
         curl_exit=$?
 
         if [ "${curl_exit}" -ne 0 ]; then
             log="${log}Error: 订阅 ${sub_count} 转换失败，退出码: ${curl_exit}\n\t"
             continue
-        elif [ "${http_code}" -ne 200 ]; then
+        elif [ "${http_code:-0}" -ne 200 ]; then
             log="${log}Error: 订阅 ${sub_count} 转换失败，响应码: ${http_code}\n\t"
             continue
         fi
@@ -213,17 +253,21 @@ while IFS= read -r line || [ -n "${line}" ]; do
 done < "${SUB_URLS_FILE}"
 
 if [ "${success_count}" -eq 0 ]; then
-    log="${log}Error: 所有订阅均失败\n\t"
+    log="${log}Error: 所有订阅均失败，保留现有配置\n\t"
+    restore_good_config
     sub_end 1
 fi
 
 # ---------------------------
 # 构建最终配置文件（printf %s 不解释转义，订阅数据安全）
+# secret 为空时写入空字符串 = 无密码（保持旧行为）；设置后面板与 API 需要鉴权
 # ---------------------------
+SECRET_ESC=$(yaml_escape "${SECRET}")
 {
     printf '%s\n' 'mixed-port: 7890'
     printf '%s\n' 'external-ui: /root/.config/mihomo/ui'
     printf '%s\n' 'allow-lan: true'
+    printf '%s\n' "secret: \"${SECRET_ESC}\""
 
     if [ -n "${all_proxies}" ]; then
         printf '%s\n' 'proxies:'
@@ -252,28 +296,83 @@ fi
     fi
 
     printf '%s\n' 'external-controller: 0.0.0.0:9090'
-} > "${CONFIG_FILE}"
+} > "${CONFIG_FILE}.new"
+
+if [ ! -s "${CONFIG_FILE}.new" ]; then
+    log="${log}Error: 配置文件生成失败\n\t"
+    restore_good_config
+    sub_end 1
+fi
+
+# 可选 overlay.yaml 深合并（移植自上游 3.0.0，不存在则跳过，不影响原有多订阅流程）
+if [ -f "${OVERLAY_FILE}" ] && [ -s "${OVERLAY_FILE}" ]; then
+    if command -v yq > /dev/null 2>&1; then
+        if yq eval-all 'select(fileIndex == 0) * select(fileIndex == 1)' \
+            "${CONFIG_FILE}.new" "${OVERLAY_FILE}" > "${CONFIG_FILE}.merged" 2>/dev/null; then
+            yq -i '
+                .rules = ((.["rules-prepend"] // []) + (.rules // []) + (.["rules-append"] // [])) |
+                del(.["rules-prepend"]) | del(.["rules-append"])
+            ' "${CONFIG_FILE}.merged" 2>/dev/null
+            # 强制受管字段，避免 overlay 覆盖端口、面板与密钥
+            yq -i '
+                ."mixed-port" = 7890 |
+                ."allow-lan" = true |
+                ."external-controller" = "0.0.0.0:9090" |
+                ."external-ui" = "/root/.config/mihomo/ui"
+            ' "${CONFIG_FILE}.merged" 2>/dev/null
+            mv "${CONFIG_FILE}.merged" "${CONFIG_FILE}.new"
+            log="${log}已合并 overlay.yaml\n\t"
+        else
+            log="${log}Warning: overlay.yaml 合并失败，沿用转换结果\n\t"
+        fi
+    else
+        log="${log}Warning: 未安装 yq，跳过 overlay.yaml\n\t"
+    fi
+fi
+
+# secret 由脚本强制写入，不允许 overlay 覆盖
+if command -v yq > /dev/null 2>&1; then
+    yq -i ".secret = \"${SECRET_ESC}\"" "${CONFIG_FILE}.new" 2>/dev/null || true
+fi
+
+mv "${CONFIG_FILE}.new" "${CONFIG_FILE}"
 
 if [ ! -s "${CONFIG_FILE}" ]; then
     log="${log}Error: 配置文件生成失败\n\t"
+    restore_good_config
     sub_end 1
 fi
 
 log="${log}配置文件生成成功 (${success_count}/${sub_count} 个订阅) ✅\n\t"
 
 # ---------------------------
-# 配置重新加载
+# 配置重新加载（带 SECRET 鉴权 + 失败回滚，移植自上游 3.0.0）
 # ---------------------------
 log="${log}配置重新加载...\n\t"
-reload_response=$(curl -s --max-time 15 -w "%{http_code}" -o /dev/null -X PUT "http://127.0.0.1:9090/configs?force=true" -H "Content-Type: application/json" -d '{"path":"","payload":""}')
+if [ -n "${SECRET}" ]; then
+    reload_response=$(curl_local --max-time 15 -w "%{http_code}" -o /dev/null -X PUT "http://127.0.0.1:9090/configs?force=true" -H "Content-Type: application/json" -H "Authorization: Bearer ${SECRET}" -d '{"path":"","payload":""}')
+else
+    reload_response=$(curl_local --max-time 15 -w "%{http_code}" -o /dev/null -X PUT "http://127.0.0.1:9090/configs?force=true" -H "Content-Type: application/json" -d '{"path":"","payload":""}')
+fi
 reload_exit_code=$?
 
 if [ "${reload_exit_code}" -ne 0 ]; then
-    log="${log}Error: 网络错误，退出码: ${reload_exit_code}\n\t"
+    log="${log}Warning: mihomo 服务未启动，跳过热重载（启动后会读取新配置）\n\t"
+    cp -f "${CONFIG_FILE}" "${GOOD_FILE}"
+elif [ "${reload_response:-0}" -ne 204 ] && [ "${reload_response:-0}" -ne 200 ]; then
+    log="${log}Error: 配置重新加载失败，响应码: ${reload_response}，尝试回滚\n\t"
+    if [ -f "${GOOD_FILE}" ]; then
+        cp -f "${GOOD_FILE}" "${CONFIG_FILE}"
+        if [ -n "${SECRET}" ]; then
+            curl_local --max-time 15 -o /dev/null -X PUT "http://127.0.0.1:9090/configs?force=true" -H "Content-Type: application/json" -H "Authorization: Bearer ${SECRET}" -d '{"path":"","payload":""}' >/dev/null 2>&1 || true
+        else
+            curl_local --max-time 15 -o /dev/null -X PUT "http://127.0.0.1:9090/configs?force=true" -H "Content-Type: application/json" -d '{"path":"","payload":""}' >/dev/null 2>&1 || true
+        fi
+        log="${log}已回滚上一份可用配置\n\t"
+    fi
     sub_end 1
-elif [ "${reload_response}" -ne 204 ]; then
-    log="${log}Error: 配置重新加载失败，响应码: ${reload_response}\n\t"
-    sub_end 1
+else
+    cp -f "${CONFIG_FILE}" "${GOOD_FILE}"
 fi
 
 # 记录最后运行时间

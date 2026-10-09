@@ -125,6 +125,67 @@ extract_section() {
 }
 
 # ---------------------------
+# 别名前缀：将某订阅的节点名 / 策略组名统一改写为 "别名 | 原名"
+# 解决同一家多账号节点重名冲突，面板上也能区分流量归属。
+# 对 temp_file 原地改写前先做两遍扫描：第一遍建重命名映射，
+# 第二遍改写定义与引用（策略组成员、规则策略字段），保证引用一致。
+# 无别名时不调用，保持原行为。
+# ---------------------------
+apply_alias_prefix() {
+    file="$1"
+    prefix="$2"
+    tmp_renamed="${file}.renamed"
+    awk -v pre="${prefix}" '
+        function esc(s,   t) { t=s; gsub(/\\/, "\\\\", t); gsub(/["]/, "\\\"", t); return t }
+        function norm(v,   k) { k=v; gsub(/^["]|["]$/, "", k); gsub(/^ +| +$/, "", k); return k }
+        function is_top(key) { return (key ~ /^[A-Za-z][A-Za-z0-9_-]*:[ \t]*$/) }
+        NR==FNR {
+            if ($0 ~ /^proxies:[ \t]*$/) { sec="proxies"; next }
+            if ($0 ~ /^proxy-groups:[ \t]*$/) { sec="groups"; next }
+            if (is_top($0)) { sec=""; next }
+            if ((sec=="proxies" || sec=="groups") && $0 ~ /^  - name: /) {
+                v=$0; sub(/^  - name: /, "", v)
+                k=norm(v)
+                if (k != "" && !(k in mp)) mp[k]=1
+            }
+            next
+        }
+        FNR==1 { sec="" }
+        $0 ~ /^proxies:[ \t]*$/ { sec="proxies"; print; next }
+        $0 ~ /^proxy-groups:[ \t]*$/ { sec="groups"; print; next }
+        $0 ~ /^rules:[ \t]*$/ { sec="rules"; print; next }
+        is_top($0) { sec=""; print; next }
+        (sec=="proxies" || sec=="groups") && /^  - name: / {
+            v=$0; sub(/^  - name: /, "", v)
+            k=norm(v)
+            printf "  - name: \"%s | %s\"\n", esc(pre), esc(k)
+            next
+        }
+        sec=="groups" && /^[ \t]*- / {
+            ind=$0; sub(/-.*$/, "- ", ind)
+            ref=$0; sub(/^[ \t]*- +/, "", ref)
+            k=norm(ref)
+            if (k in mp) printf "%s\"%s | %s\"\n", ind, esc(pre), esc(k)
+            else print
+            next
+        }
+        sec=="rules" && /^  - / {
+            n=split($0, f, ",")
+            idx=n
+            key=f[n]; gsub(/^ +| +$/, "", key)
+            if (key=="no-resolve" && n>=3) { idx=n-1; key=f[idx]; gsub(/^ +| +$/, "", key) }
+            gsub(/^["]|["]$/, "", key)
+            if (key in mp) f[idx]="\"" esc(pre) " | " esc(key) "\""
+            out=f[1]
+            for (i=2;i<=n;i++) out=out "," f[i]
+            print out
+            next
+        }
+        { print }
+    ' "${file}" "${file}" > "${tmp_renamed}" 2>/dev/null && mv "${tmp_renamed}" "${file}"
+}
+
+# ---------------------------
 # 日志输出辅助
 # ---------------------------
 check_schedule
@@ -172,11 +233,30 @@ while IFS= read -r line || [ -n "${line}" ]; do
     esac
 
     sub_count=$((sub_count + 1))
-    sub_url="${line}"
+    # 订阅行格式：纯 URL，或 "别名<TAB>URL"（TAB 不可能出现在 URL 里）
+    # 无 TAB 即老格式，保持兼容
+    _f1=$(printf '%s' "${line}" | cut -f1)
+    _f2=$(printf '%s' "${line}" | cut -f2)
+    if [ "${_f2}" = "${line}" ]; then
+        SUB_ALIAS=""
+        sub_url="${line}"
+    else
+        SUB_ALIAS=$(printf '%s' "${_f1}" | tr -d '\r\n')
+        sub_url="${_f2}"
+    fi
+    if [ -z "${sub_url}" ]; then
+        log="${log}Error: 订阅 ${sub_count}${log_tag} 地址为空，已跳过\n\t"
+        continue
+    fi
+    if [ -n "${SUB_ALIAS}" ]; then
+        log_tag=" [${SUB_ALIAS}]"
+    else
+        log_tag=""
+    fi
     raw_file="${TEMP_DIR}/raw_${sub_count}.txt"
     temp_file="${TEMP_DIR}/sub_${sub_count}.yml"
 
-    log="${log}第 ${sub_count} 个订阅获取中...\n\t"
+    log="${log}第 ${sub_count} 个订阅${log_tag}获取中...\n\t"
 
     # curl 直接下载原始订阅，正确设置 User-Agent
     # 绕开代理 + 跟随跳转 + 检查 HTTP 状态码（移植自上游 3.0.0 的健壮下载）
@@ -184,24 +264,24 @@ while IFS= read -r line || [ -n "${line}" ]; do
     http_code=$(curl_direct -w "%{http_code}" -H "User-Agent: ${SUB_UA}" -o "${raw_file}" "${sub_url}" 2>/dev/null) || curl_exit=$?
 
     if [ "${curl_exit}" -ne 0 ]; then
-        log="${log}Error: 订阅 ${sub_count} 下载失败，退出码: ${curl_exit}\n\t"
+        log="${log}Error: 订阅 ${sub_count}${log_tag} 下载失败，退出码: ${curl_exit}\n\t"
         continue
     fi
 
     if [ "${http_code:-0}" -ne 200 ]; then
-        log="${log}Error: 订阅 ${sub_count} 下载失败，响应码: ${http_code}\n\t"
+        log="${log}Error: 订阅 ${sub_count}${log_tag} 下载失败，响应码: ${http_code}\n\t"
         continue
     fi
 
     if [ ! -s "${raw_file}" ]; then
-        log="${log}Error: 订阅 ${sub_count} 返回空内容\n\t"
+        log="${log}Error: 订阅 ${sub_count}${log_tag} 返回空内容\n\t"
         continue
     fi
 
     # 判断原始内容格式：如果已经是 clash YAML 则直接使用（允许行首空格）
     if grep -qE '^[[:space:]]*proxies:' "${raw_file}" 2>/dev/null; then
         cp "${raw_file}" "${temp_file}"
-        log="${log}订阅 ${sub_count} 已为 Clash 格式\n\t"
+        log="${log}订阅 ${sub_count}${log_tag} 已为 Clash 格式\n\t"
     else
         # 非 Clash 格式，通过 subconverter 转换（本机请求同样绕开代理）
         encoded_sub_url=$(jq -rn --arg x "${sub_url}" '$x|@uri' 2>/dev/null)
@@ -210,17 +290,23 @@ while IFS= read -r line || [ -n "${line}" ]; do
         curl_exit=$?
 
         if [ "${curl_exit}" -ne 0 ]; then
-            log="${log}Error: 订阅 ${sub_count} 转换失败，退出码: ${curl_exit}\n\t"
+            log="${log}Error: 订阅 ${sub_count}${log_tag} 转换失败，退出码: ${curl_exit}\n\t"
             continue
         elif [ "${http_code:-0}" -ne 200 ]; then
-            log="${log}Error: 订阅 ${sub_count} 转换失败，响应码: ${http_code}\n\t"
+            log="${log}Error: 订阅 ${sub_count}${log_tag} 转换失败，响应码: ${http_code}\n\t"
             continue
         fi
     fi
 
     if [ ! -s "${temp_file}" ]; then
-        log="${log}Error: 订阅 ${sub_count} 处理后为空\n\t"
+        log="${log}Error: 订阅 ${sub_count}${log_tag} 处理后为空\n\t"
         continue
+    fi
+
+    # 有别名则统一加前缀（节点名/策略组名/引用一起改，保证一致）
+    if [ -n "${SUB_ALIAS}" ]; then
+        apply_alias_prefix "${temp_file}" "${SUB_ALIAS}"
+        log="${log}订阅 ${sub_count}${log_tag}已添加别名前缀\n\t"
     fi
 
     # 提取代理列表
@@ -245,9 +331,9 @@ while IFS= read -r line || [ -n "${line}" ]; do
     # 只有实际提取到代理或规则才算成功
     if [ -n "${proxies}" ] || [ -n "${rules}" ]; then
         success_count=$((success_count + 1))
-        log="${log}订阅 ${sub_count} 更新成功\n\t"
+        log="${log}订阅 ${sub_count}${log_tag} 更新成功\n\t"
     else
-        log="${log}订阅 ${sub_count} 无有效节点\n\t"
+        log="${log}订阅 ${sub_count}${log_tag} 无有效节点\n\t"
     fi
 
 done < "${SUB_URLS_FILE}"
@@ -279,6 +365,9 @@ if [ -n "${all_proxies}" ]; then
         { print }
     ')
     proxy_after=$(printf '%s' "${all_proxies}" | grep -cE '^  - name: ' || true)
+    # $() 会剥掉末尾换行，补回来（否则 proxies 块与下一节粘连）
+    all_proxies="${all_proxies}
+"
     proxy_dedup=$((proxy_before - proxy_after))
     if [ "${proxy_dedup}" -gt 0 ]; then
         log="${log}已去除 ${proxy_dedup} 个重名节点\n\t"

@@ -92,6 +92,34 @@ h1 {
     padding: 6px 10px;
     border-radius: var(--radius-sm);
 }
+.sub-alias {
+    flex-shrink: 0;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    padding: 4px 10px;
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.sub-edit {
+    background: none;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    padding: 6px 14px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    transition: all 0.15s;
+}
+.sub-edit:hover {
+    background: var(--accent);
+    color: #fff;
+}
 .sub-del {
     background: none;
     border: 1px solid var(--danger);
@@ -238,6 +266,7 @@ h1 {
     <div class="card-title">订阅列表</div>
     <ul class="sub-list" id="subList"></ul>
     <div class="add-form">
+        <input class="add-input" id="aliasInput" placeholder="别名（可选，如：主账号）" autocomplete="off" maxlength="24" style="flex:0 0 130px;">
         <input class="add-input" id="subInput" placeholder="输入订阅 URL（http:// 或 https://）" autocomplete="off">
         <button class="btn btn-primary" onclick="addSub()">＋ 添加</button>
     </div>
@@ -314,13 +343,21 @@ async function loadSubs() {
         list.innerHTML = '<div class="empty-state">暂无订阅，请在上方添加</div>';
         return;
     }
-    data.subscriptions.forEach(url => {
+    data.subscriptions.forEach(s => {
+        // 兼容老数据：字符串，或 {url, alias} 对象
+        let url = (s && s.url) || s;
+        let alias = (s && s.alias) || '';
         let li = document.createElement('li');
         li.className = 'sub-item';
+        let badge = alias ? '<span class="sub-alias">' + escHtml(alias) + '</span>' : '';
         li.innerHTML =
+            badge +
             '<span class="sub-url">' + escHtml(url) + '</span>' +
+            '<button class="sub-edit" onclick="renSub(this)">改名</button>' +
             '<button class="sub-del" onclick="delSub(this)">删除</button>';
         li.querySelector('.sub-del').dataset.url = url;
+        li.querySelector('.sub-edit').dataset.url = url;
+        li.querySelector('.sub-edit').dataset.alias = alias;
         list.appendChild(li);
     });
     loadStatus();
@@ -332,15 +369,30 @@ function escHtml(s) {
     return d.innerHTML;
 }
 
-// 添加订阅
+// 添加订阅（可带别名，别名会作为节点名前缀用于区分流量归属）
 async function addSub() {
     let input = document.getElementById('subInput');
+    let aliasInput = document.getElementById('aliasInput');
     let url = input.value.trim();
+    let alias = aliasInput.value.trim();
     if (!url) { toast('请输入 URL', false); return; }
-    let r = await api('add', 'POST', 'url=' + encodeURIComponent(url));
+    let r = await api('add', 'POST', 'alias=' + encodeURIComponent(alias) + '&url=' + encodeURIComponent(url));
     if (r.error) { toast(r.error, false); return; }
     toast('订阅已添加', true);
     input.value = '';
+    aliasInput.value = '';
+    loadSubs();
+}
+
+// 修改别名（留空即清除）
+async function renSub(btn) {
+    let url = btn.dataset.url;
+    let cur = btn.dataset.alias || '';
+    let alias = prompt('设置别名（留空清除）：', cur);
+    if (alias === null) return;
+    let r = await api('rename', 'POST', 'alias=' + encodeURIComponent(alias.trim()) + '&url=' + encodeURIComponent(url));
+    if (r.error) { toast(r.error, false); return; }
+    toast('别名已更新', true);
     loadSubs();
 }
 
@@ -448,6 +500,9 @@ async function loadSchedule() {
 
 // 回车添加订阅
 document.getElementById('subInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') addSub();
+});
+document.getElementById('aliasInput').addEventListener('keydown', function(e) {
     if (e.key === 'Enter') addSub();
 });
 

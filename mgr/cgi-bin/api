@@ -7,6 +7,16 @@ SUB_URLS_FILE="${CONFIG_DIR}/sub_urls.txt"
 SCHEDULE_FILE="${CONFIG_DIR}/schedule.conf"
 LOG_FILE="${CONFIG_DIR}/log.txt"
 SUB_SCRIPT="/etc/periodic/15min/sub.sh"
+# 订阅行分隔符：别名<TAB>URL（TAB 不可能出现在 URL 里）
+TAB=$(printf '\t')
+
+# 取某行的 URL 部分（兼容无别名的老格式）
+url_part() {
+    case "$1" in
+        *"${TAB}"*) printf '%s' "${1#*"${TAB}"}" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
 
 # 输出 JSON 响应头
 json_header() {
@@ -30,7 +40,7 @@ json_header
 
 case "${action}" in
     # ---------------------------
-    # 列出订阅
+    # 列出订阅（含别名，老格式无 TAB 即别名为空）
     # ---------------------------
     list)
         printf '{"subscriptions":['
@@ -40,26 +50,41 @@ case "${action}" in
                 case "${line}" in
                     ""|"#"*) continue ;;
                 esac
+                # TAB 分隔：别名<TAB>URL，无 TAB 即老格式
+                case "${line}" in
+                    *"${TAB}"*)
+                        alias="${line%%"${TAB}"*}"
+                        url="${line#*"${TAB}"}"
+                        ;;
+                    *)
+                        alias=""
+                        url="${line}"
+                        ;;
+                esac
+                [ -z "${url}" ] && continue
                 if $first; then
                     first=false
                 else
                     printf ','
                 fi
                 # 转义 JSON 特殊字符
-                escaped=$(echo "${line}" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\x09/\\t/g; s/\x0A/\\n/g; s/\x0D/\\r/g')
-                printf '"%s"' "${escaped}"
+                escaped_url=$(echo "${url}" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\x09/\\t/g; s/\x0A/\\n/g; s/\x0D/\\r/g')
+                escaped_alias=$(echo "${alias}" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\x09/\\t/g; s/\x0A/\\n/g; s/\x0D/\\r/g')
+                printf '{"url":"%s","alias":"%s"}' "${escaped_url}" "${escaped_alias}"
             done < "${SUB_URLS_FILE}"
         fi
         printf ']}\n'
         ;;
 
     # ---------------------------
-    # 添加订阅
+    # 添加订阅（可带别名）
     # ---------------------------
     add)
         body=$(read_body)
         url=$(echo "${body}" | sed -n 's/.*url=\([^&]*\).*/\1/p' | sed 's/+/ /g;s/%/\\x/g')
         url=$(printf "%b" "${url}")
+        alias=$(echo "${body}" | sed -n 's/.*alias=\([^&]*\).*/\1/p' | sed 's/+/ /g;s/%/\\x/g')
+        alias=$(printf "%b" "${alias}" 2>/dev/null | tr -d '\t\r\n')
         if [ -z "${url}" ]; then
             printf '{"error":"URL 不能为空"}\n'
             exit 0
@@ -72,17 +97,32 @@ case "${action}" in
                 exit 0
                 ;;
         esac
-        # 检查重复
-        if [ -f "${SUB_URLS_FILE}" ] && grep -qFx "${url}" "${SUB_URLS_FILE}" 2>/dev/null; then
-            printf '{"error":"该订阅已存在"}\n'
-            exit 0
+        # 别名不能含 TAB（分隔符），已用 tr 去除；URL 本身不能含 TAB
+        case "${url}" in
+            *"${TAB}"*)
+                printf '{"error":"URL 非法"}\n'
+                exit 0
+                ;;
+        esac
+        # 检查重复（按 URL 部分比对，兼容老格式）
+        if [ -f "${SUB_URLS_FILE}" ]; then
+            while IFS= read -r ex || [ -n "${ex}" ]; do
+                if [ "$(url_part "${ex}")" = "${url}" ]; then
+                    printf '{"error":"该订阅已存在"}\n'
+                    exit 0
+                fi
+            done < "${SUB_URLS_FILE}"
         fi
-        echo "${url}" >> "${SUB_URLS_FILE}"
+        if [ -n "${alias}" ]; then
+            printf '%s\t%s\n' "${alias}" "${url}" >> "${SUB_URLS_FILE}"
+        else
+            echo "${url}" >> "${SUB_URLS_FILE}"
+        fi
         printf '{"success":true,"message":"订阅已添加"}\n'
         ;;
 
     # ---------------------------
-    # 删除订阅
+    # 删除订阅（按 URL 部分匹配，兼容老格式）
     # ---------------------------
     delete)
         body=$(read_body)
@@ -93,10 +133,48 @@ case "${action}" in
             exit 0
         fi
         if [ -f "${SUB_URLS_FILE}" ]; then
-            grep -vFx "${url}" "${SUB_URLS_FILE}" > "${SUB_URLS_FILE}.tmp" 2>/dev/null
-            mv "${SUB_URLS_FILE}.tmp" "${SUB_URLS_FILE}"
+            tmpf="${SUB_URLS_FILE}.tmp"
+            : > "${tmpf}"
+            while IFS= read -r ex || [ -n "${ex}" ]; do
+                if [ "$(url_part "${ex}")" != "${url}" ]; then
+                    printf '%s\n' "${ex}" >> "${tmpf}"
+                fi
+            done < "${SUB_URLS_FILE}"
+            mv "${tmpf}" "${SUB_URLS_FILE}"
         fi
         printf '{"success":true,"message":"订阅已删除"}\n'
+        ;;
+
+    # ---------------------------
+    # 修改别名（alias 为空则清除为无别名行）
+    # ---------------------------
+    rename)
+        body=$(read_body)
+        url=$(echo "${body}" | sed -n 's/.*url=\([^&]*\).*/\1/p' | sed 's/+/ /g;s/%/\\x/g')
+        url=$(printf "%b" "${url}")
+        alias=$(echo "${body}" | sed -n 's/.*alias=\([^&]*\).*/\1/p' | sed 's/+/ /g;s/%/\\x/g')
+        alias=$(printf "%b" "${alias}" 2>/dev/null | tr -d '\t\r\n')
+        if [ -z "${url}" ]; then
+            printf '{"error":"URL 不能为空"}\n'
+            exit 0
+        fi
+        if [ -f "${SUB_URLS_FILE}" ]; then
+            tmpf="${SUB_URLS_FILE}.tmp"
+            : > "${tmpf}"
+            while IFS= read -r ex || [ -n "${ex}" ]; do
+                if [ "$(url_part "${ex}")" = "${url}" ]; then
+                    if [ -n "${alias}" ]; then
+                        printf '%s\t%s\n' "${alias}" "${url}" >> "${tmpf}"
+                    else
+                        printf '%s\n' "${url}" >> "${tmpf}"
+                    fi
+                else
+                    printf '%s\n' "${ex}" >> "${tmpf}"
+                fi
+            done < "${SUB_URLS_FILE}"
+            mv "${tmpf}" "${SUB_URLS_FILE}"
+        fi
+        printf '{"success":true,"message":"别名已更新"}\n'
         ;;
 
     # ---------------------------

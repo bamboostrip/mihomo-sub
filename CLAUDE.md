@@ -44,12 +44,13 @@ Docker 化的 mihomo（clash meta）代理方案，内置 Web 管理页面、多
 ```
 check_schedule（非 --now 时检查 last_run 时间戳）
   → 清理 subconverter 缓存
-  → 读取 sub_urls.txt（去 \r、跳过空行和 # 注释）
+  → 读取 sub_urls.txt（去 \r、跳过空行和 # 注释，支持 `别名<TAB>URL`）
   → 对每个 URL:
      ├─ curl 直接下载（UA=clash-verge/v2.5.1，可通过 user_agent.txt 覆盖）
      ├─ 检测内容含 ^proxies: → 直接当 Clash YAML 用
-     └─ 否则 → 交给 subconverter(:25500) 转换
-  → 提取 proxies / rules / proxy-groups → 合并多订阅
+     ├─ 否则 → 交给 subconverter(:25500) 转换
+     └─ 有别名 → 节点名/策略组名/引用统一加 `别名 | ` 前缀（两遍扫描保证一致）
+  → 提取 proxies / rules / proxy-groups → 合并多订阅（同名去重，保留首次）
   → 生成 config.yaml → PUT :9090/configs 热重载
   → 记录 last_run 时间戳 → 写日志（超 1MB 自动截断末尾 50KB）
 ```
@@ -58,9 +59,10 @@ check_schedule（非 --now 时检查 last_run 时间戳）
 
 | action | method | 说明 |
 |--------|--------|------|
-| `list` | GET | 列出订阅列表 (JSON) |
-| `add` | POST | 添加订阅 (body: url=...) |
-| `delete` | POST | 删除订阅 (body: url=...) |
+| `list` | GET | 列出订阅列表 (JSON `[{url,alias}]`) |
+| `add` | POST | 添加订阅 (body: url=...&alias=...，别名可选) |
+| `delete` | POST | 删除订阅 (body: url=...)，按 URL 部分匹配 |
+| `rename` | POST | 修改别名 (body: url=...&alias=...，留空清除) |
 | `refresh` | GET | 后台触发 sub.sh --now |
 | `schedule` | GET/POST | 查看/修改定时策略 |
 | `logs` | GET | 最近 100 行日志 |
@@ -70,7 +72,7 @@ check_schedule（非 --now 时检查 last_run 时间戳）
 
 | 文件 | 写方 | 说明 |
 |------|------|------|
-| `sub_urls.txt` | 管理页面/CGI | 订阅 URL，一行一个，支持 # 注释 |
+| `sub_urls.txt` | 管理页面/CGI | 订阅 URL，一行一个，支持 # 注释；可带别名 `别名<TAB>URL` |
 | `schedule.conf` | 管理页面/CGI | `15min` / `hourly` / `daily` |
 | `user_agent.txt` | 手动创建 | 自定义 UA，默认 `clash-verge/v2.5.1` |
 | `overlay.yaml` | 手动创建（可选） | 自定义覆盖层，不存在则跳过；受管字段不被覆盖 |

@@ -302,6 +302,16 @@ h1 {
     </div>
 </div>
 
+<!-- 多账号合并方式卡片 -->
+<div class="card">
+    <div class="card-title">多账号合并方式</div>
+    <div class="schedule-options" id="groupModeOpts">
+        <div class="schedule-opt" data-val="merge" onclick="setGroupMode('merge')">合并策略组（推荐）</div>
+        <div class="schedule-opt" data-val="isolate" onclick="setGroupMode('isolate')">按账号隔离</div>
+    </div>
+    <div class="use-text" id="groupModeHint" style="margin-top:10px"></div>
+</div>
+
 <!-- 操作按钮 -->
 <div class="card">
     <div class="action-row">
@@ -554,6 +564,34 @@ async function loadSchedule() {
     });
 }
 
+// 多账号合并方式
+function updateGroupModeHint(mode) {
+    document.getElementById('groupModeHint').textContent = mode === 'isolate'
+        ? '各账号的策略组独立（组名带「别名 | 」前缀），规则分别指向各自账号的组；切换后自动刷新'
+        : '同名策略组合并，多账号的节点共用一个组，规则去重只留一份；切换后自动刷新';
+}
+
+async function loadGroupMode() {
+    let data = await api('groupmode');
+    let cur = data.mode === 'isolate' ? 'isolate' : 'merge';
+    document.querySelectorAll('#groupModeOpts .schedule-opt').forEach(el => {
+        el.classList.toggle('active', el.dataset.val === cur);
+    });
+    updateGroupModeHint(cur);
+}
+
+async function setGroupMode(val) {
+    let r = await api('groupmode', 'POST', 'mode=' + val);
+    if (r.error) { toast(r.error, false); return; }
+    document.querySelectorAll('#groupModeOpts .schedule-opt').forEach(el => {
+        el.classList.toggle('active', el.dataset.val === val);
+    });
+    updateGroupModeHint(val);
+    await api('refresh');
+    toast('模式已切换，正在刷新…', true);
+    setTimeout(loadLogs, 1500);
+}
+
 // 回车添加订阅
 document.getElementById('subInput').addEventListener('keydown', function(e) {
     if (e.key === 'Enter') addSub();
@@ -567,6 +605,7 @@ loadStatus();
 loadSubs();
 loadLogs();
 loadSchedule();
+loadGroupMode();
 </script>
 </body>
 </html>

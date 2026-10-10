@@ -11,6 +11,7 @@ SECRET_FILE="${CONFIG_DIR}/.secret"
 LOG_FILE="${CONFIG_DIR}/log.txt"
 SUB_URLS_FILE="${CONFIG_DIR}/sub_urls.txt"
 SCHEDULE_FILE="${CONFIG_DIR}/schedule.conf"
+GROUP_MODE_FILE="${CONFIG_DIR}/group_mode.conf"
 LAST_RUN_FILE="${CONFIG_DIR}/last_run"
 UA_FILE="${CONFIG_DIR}/user_agent.txt"
 TEMP_DIR="/tmp/mihomo_sub"
@@ -32,6 +33,15 @@ fi
 if [ -z "${SECRET}" ] && [ -f "${SECRET_FILE}" ]; then
     SECRET=$(tr -d '[:space:]' < "${SECRET_FILE}" 2>/dev/null)
 fi
+
+# 策略组合并模式（管理页面可切换）：
+#   merge   （默认）别名只改节点名；同名策略组合并成员（多账号节点同池），规则去重留一份
+#   isolate          别名同时改策略组名与引用；各账号策略组独立，规则也分别保留
+GROUP_MODE=$(head -1 "${GROUP_MODE_FILE}" 2>/dev/null)
+case "${GROUP_MODE}" in
+    isolate) GROUP_MODE="isolate" ;;
+    *) GROUP_MODE="merge" ;;
+esac
 
 # YAML 双引号转义（secret 写入配置时用）
 yaml_escape() {
@@ -181,20 +191,24 @@ normalize_yaml() {
 }
 
 # ---------------------------
-# 别名前缀：将某订阅的节点名 / 策略组名统一改写为 "别名 | 原名"
-# 解决同一家多账号节点重名冲突，面板上也能区分流量归属。
+# 别名前缀（两种模式，由 GROUP_MODE 决定）：
+#   merge  ：只把节点名改写为 "别名 | 原名"，策略组名不改。各账号节点全部保留，
+#            不同账号的节点可落进同名策略组（组由后续“同名结合并成员”步骤合成
+#            公共组）；规则里的策略组引用不带前缀，同机场两账号的相同规则天然去重。
+#   isolate：节点名 + 策略组名 + 所有引用统一加前缀，各账号策略组/规则完全独立。
 # 输入必须是 normalize_yaml 规范化后的文件：块样式、2 格缩进。
 # 规范化时非 ASCII 会被 yq 写成 "..." 包裹的转义序列，原样保留即可
 # （YAML 会正确解码）；只有用户输入的别名前缀需要转义。
-# 两遍扫描：第一遍建重命名映射，第二遍改写定义与引用，保证引用一致。
-# 无别名时不调用，保持原行为。
+# 两遍扫描：第一遍建节点/策略组名字映射，第二遍只改节点定义与“指向节点”
+# 的引用（组成员、规则策略），保证引用一致。无别名时不调用，保持原行为。
 # ---------------------------
 apply_alias_prefix() {
     file="$1"
     prefix="$2"
+    mode="${3:-merge}"
     tmp_renamed="${file}.renamed"
     # 前缀用环境变量传入：awk -v 会解释 \n 等转义序列，会把别名里的反斜杠吞掉
-    PRE="${prefix}" awk '
+    PRE="${prefix}" MODE="${mode}" awk '
         function hexval(h,   n,i,c,d) {
             n = 0
             for (i = 1; i <= length(h); i++) {
@@ -287,7 +301,7 @@ apply_alias_prefix() {
         }
         function is_top(key) { return (key ~ /^[A-Za-z][A-Za-z0-9_-]*:[ \t]*$/) }
         function entry_ind(s,   t) { t=s; sub(/- name:.*$/, "", t); return t }
-        BEGIN { pre = ENVIRON["PRE"]; SQ = sprintf("%c", 39); SQSQ = SQ SQ }
+        BEGIN { pre = ENVIRON["PRE"]; md = ENVIRON["MODE"]; SQ = sprintf("%c", 39); SQSQ = SQ SQ }
         NR==FNR {
             if ($0 ~ /^proxies:[ \t]*$/) { sec="proxies"; next }
             if ($0 ~ /^proxy-groups:[ \t]*$/) { sec="groups"; next }
@@ -295,7 +309,9 @@ apply_alias_prefix() {
             if ((sec=="proxies" || sec=="groups") && $0 ~ /^[ \t]{0,2}- name: /) {
                 v=$0; sub(/^[ \t]{0,2}- name: /, "", v)
                 k=norm(v)
-                if (k != "" && !(k in mp)) mp[k]=1
+                if (k == "") next
+                if (sec=="proxies") nm[k]=1
+                else gm[k]=1
             }
             next
         }
@@ -304,26 +320,38 @@ apply_alias_prefix() {
         $0 ~ /^proxy-groups:[ \t]*$/ { sec="groups"; print; next }
         $0 ~ /^rules:[ \t]*$/ { sec="rules"; print; next }
         is_top($0) { sec=""; print; next }
-        (sec=="proxies" || sec=="groups") && /^[ \t]{0,2}- name: / {
+        sec=="proxies" && /^[ \t]{0,2}- name: / {
             ind=entry_ind($0)
             v=$0; sub(/^[ \t]{0,2}- name: /, "", v)
             k=norm(v)
             printf "%s- name: \"%s | %s\"\n", ind, esc(pre), esc(k)
             next
         }
+        sec=="groups" && /^[ \t]{0,2}- name: / {
+            # isolate 模式策略组名也加前缀（各账号组独立）；merge 模式保持组名共享
+            if (md == "isolate") {
+                ind=entry_ind($0)
+                v=$0; sub(/^[ \t]{0,2}- name: /, "", v)
+                k=norm(v)
+                printf "%s- name: \"%s | %s\"\n", ind, esc(pre), esc(k)
+            } else print
+            next
+        }
         sec=="groups" && /^[ \t]*- / {
             ind=$0; sub(/-.*$/, "- ", ind)
             ref=$0; sub(/^[ \t]*- +/, "", ref)
             k=norm(ref)
-            if (k in mp) printf "%s\"%s | %s\"\n", ind, esc(pre), esc(k)
+            if (k in nm || (md == "isolate" && k in gm)) printf "%s\"%s | %s\"\n", ind, esc(pre), esc(k)
             else print
             next
         }
         sec=="rules" && /^[ \t]*- / {
             # 整行解开外层引号后切分（规则整体被引号包裹时直接 split 会引号失衡），
             # 双引号行剥壳后必须用 yqdec 解码 \U/\u/\x 等转义（yq 会把 emoji
-            # 写成 "\U0001F6D1..."，不解码则字段与 mp 里已解码的名字比对不上，
-            # 策略不会被加别名前缀，重载直接 400），命中则整行按规范形式重建
+            # 写成 "\U0001F6D1..."，不解码则字段与 nm 里已解码的名字比对不上，
+            # 指向节点的策略不会被加别名前缀，重载直接 400）；
+            # 只有策略是“本订阅节点名”时才加前缀，指向策略组的保持原名（组名不改，
+            # 同机场两账号的相同规则因此完全一致，后续整行去重自动合并为一份）
             ind=$0; sub(/[^ \t].*$/, "", ind)
             rb=$0; sub(/^[ \t]*- +/, "", rb)
             gsub(/^[ \t]+|[ \t]+$/, "", rb)
@@ -337,7 +365,7 @@ apply_alias_prefix() {
             idx=n
             if (norm(f[n])=="no-resolve" && n>=3) idx=n-1
             key=norm(f[idx])
-            if (key in mp) {
+            if (key in nm || (md == "isolate" && key in gm)) {
                 for (i=1;i<=n;i++) f[i]=esc(norm(f[i]))
                 f[idx]=esc(pre) " | " f[idx]
                 out=f[1]
@@ -488,10 +516,14 @@ while IFS= read -r line || [ -n "${line}" ]; do
     # 后续提取/重命名/去重全部基于规范文本
     normalize_yaml "${temp_file}"
 
-    # 有别名则统一加前缀（节点名/策略组名/引用一起改，保证一致）
+    # 有别名则加前缀（merge 只改节点名；isolate 连策略组名/引用一起改）
     if [ -n "${SUB_ALIAS}" ]; then
-        apply_alias_prefix "${temp_file}" "${SUB_ALIAS}"
-        log="${log}订阅 ${sub_count}${log_tag}已添加别名前缀\n\t"
+        apply_alias_prefix "${temp_file}" "${SUB_ALIAS}" "${GROUP_MODE}"
+        if [ "${GROUP_MODE}" = "isolate" ]; then
+            log="${log}订阅 ${sub_count}${log_tag}已添加别名前缀（策略组隔离）\n\t"
+        else
+            log="${log}订阅 ${sub_count}${log_tag}已添加别名前缀（策略组合并）\n\t"
+        fi
     fi
 
     # 提取代理列表
@@ -508,7 +540,7 @@ while IFS= read -r line || [ -n "${line}" ]; do
 "
     fi
 
-    # 合并所有订阅的 proxy-groups（同名保留首次出现，各自规则才有归属）
+    # 合并所有订阅的 proxy-groups（后续按组名并成员：同机场多账号合入同一公共组）
     groups=$(extract_section "${temp_file}" "proxy-groups")
     if [ -n "${groups}" ]; then
         all_groups="${all_groups}${groups}
@@ -564,22 +596,77 @@ if [ -n "${all_proxies}" ]; then
     fi
 fi
 
-# 多订阅策略组去重：同名策略组只保留第一次出现
-# （mihomo 要求 proxy-groups 内 name 唯一；被丢弃的同名组，
-# 其规则引用会落到保留的同名组上）
+# 多订阅策略组合并：同名组保留第一次出现的属性（type/url 等），成员取并集。
+# 同机场多账号的节点加别名前缀后名字不同，两个账号的同名组在这里合成一个
+# 公共组（两个账号的节点都在里面），规则只需保留一份即可引用到全部节点。
+# （mihomo 要求 proxy-groups 内 name 唯一）
 if [ -n "${all_groups}" ]; then
     groups_before=$(printf '%s' "${all_groups}" | grep -cE '^[ \t]{0,2}- name: ' || true)
     all_groups=$(printf '%s' "${all_groups}" | awk '
-        /^[ \t]{0,2}- name: / {
-            nm=$0
-            sub(/^[ \t]{0,2}- name: /, "", nm)
-            gsub(/^["]|["]$/, "", nm)
-            gsub(/^ +| +$/, "", nm)
-            if (nm in seen) { skip=1; next }
-            seen[nm]=1; skip=0; print; next
+        {
+            if ($0 ~ /^[ \t]{0,2}- name: /) {
+                k=$0
+                sub(/^[ \t]{0,2}- name: /, "", k)
+                gsub(/^["]|["]$/, "", k)
+                gsub(/^[ \t]+|[ \t]+$/, "", k)
+                if (k in seen) { dup=1; cur=k; next }
+                seen[k]=1; dup=0; cur=k
+                n++; order[n]=k; gi[k]=n; cnt[n]=0
+                cnt[n]++; L[n,cnt[n]]=$0
+                next
+            }
+            if (cur == "") { print; next }
+            if (dup) {
+                # 同名组：只收集成员行（6 格缩进序列项），稍后并入首个同名组
+                if ($0 ~ /^[ \t]{4,}- /) {
+                    v=$0
+                    sub(/^[ \t]*-[ \t]+/, "", v)
+                    gsub(/^[ \t]+|[ \t]+$/, "", v)
+                    extra[cur, ++nex[cur]]=v
+                }
+                next
+            }
+            cnt[gi[cur]]++; L[gi[cur],cnt[gi[cur]]]=$0
+            next
         }
-        skip { next }
-        { print }
+        END {
+            for (i = 1; i <= n; i++) {
+                k=order[i]
+                # 首个同名组已有的成员值（新成员先和它去重）
+                for (j = 1; j <= cnt[i]; j++) {
+                    if (L[i,j] ~ /^[ \t]{4,}- /) {
+                        v=L[i,j]
+                        sub(/^[ \t]*-[ \t]+/, "", v)
+                        gsub(/^[ \t]+|[ \t]+$/, "", v)
+                        bmem[i,v]=1
+                    }
+                }
+                ne=0
+                for (e = 1; e <= nex[k]; e++) {
+                    v=extra[k,e]
+                    if ((i,v) in bmem || (i,v) in newm) continue
+                    newm[i,v]=1
+                    neword[++ne]=v
+                }
+                # 插入点：首个组的最后一条成员行；没有成员行则找 proxies: 行
+                sp=0; pp=0
+                for (j = 1; j <= cnt[i]; j++) {
+                    if (L[i,j] ~ /^[ \t]{4,}- /) sp=j
+                    if (L[i,j] ~ /^[ \t]*proxies:[ \t]*$/) pp=j
+                }
+                for (j = 1; j <= cnt[i]; j++) {
+                    print L[i,j]
+                    if (ne > 0 && ((sp > 0 && j == sp) || (sp == 0 && j == pp))) {
+                        for (e = 1; e <= ne; e++) print "      - " neword[e]
+                    }
+                }
+                if (ne > 0 && sp == 0 && pp == 0) {
+                    # 首个组原本没有 proxies 列表：补一个（极少数手搓配置）
+                    print "    proxies:"
+                    for (e = 1; e <= ne; e++) print "      - " neword[e]
+                }
+            }
+        }
     ')
     groups_after=$(printf '%s' "${all_groups}" | grep -cE '^[ \t]{0,2}- name: ' || true)
     # $() 会剥掉末尾换行，补回来
@@ -587,7 +674,7 @@ if [ -n "${all_groups}" ]; then
 "
     groups_dedup=$((groups_before - groups_after))
     if [ "${groups_dedup}" -gt 0 ]; then
-        log="${log}已去除 ${groups_dedup} 个重名策略组\n\t"
+        log="${log}已合并 ${groups_dedup} 个同名策略组（成员取并集）\n\t"
     fi
 fi
 

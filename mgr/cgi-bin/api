@@ -5,6 +5,7 @@
 CONFIG_DIR="/root/.config/mihomo"
 SUB_URLS_FILE="${CONFIG_DIR}/sub_urls.txt"
 SCHEDULE_FILE="${CONFIG_DIR}/schedule.conf"
+GROUP_MODE_FILE="${CONFIG_DIR}/group_mode.conf"
 LOG_FILE="${CONFIG_DIR}/log.txt"
 SUB_SCRIPT="/etc/periodic/15min/sub.sh"
 # 订阅行分隔符：别名<TAB>URL（TAB 不可能出现在 URL 里）
@@ -196,6 +197,33 @@ case "${action}" in
         # 在后台执行刷新，避免 CGI 超时
         nohup "${SUB_SCRIPT}" --now > /dev/null 2>&1 &
         printf '{"success":true,"message":"刷新已触发"}\n'
+        ;;
+
+    # ---------------------------
+    # 多账号合并方式：merge=同名策略组合并成员（默认）/ isolate=策略组按账号隔离
+    # 写入 group_mode.conf，sub.sh 下次刷新时生效
+    # ---------------------------
+    groupmode)
+        if [ "${REQUEST_METHOD}" = "POST" ]; then
+            body=$(read_body)
+            val=$(echo "${body}" | sed -n 's/.*mode=\([^&]*\).*/\1/p')
+            case "${val}" in
+                merge|isolate)
+                    echo "${val}" > "${GROUP_MODE_FILE}"
+                    printf '{"success":true,"mode":"%s"}\n' "${val}"
+                    ;;
+                *)
+                    printf '{"error":"无效模式，可选: merge, isolate"}\n'
+                    ;;
+            esac
+        else
+            val=$(head -1 "${GROUP_MODE_FILE}" 2>/dev/null)
+            case "${val}" in
+                isolate) val="isolate" ;;
+                *) val="merge" ;;
+            esac
+            printf '{"mode":"%s"}\n' "${val}"
+        fi
         ;;
 
     # ---------------------------

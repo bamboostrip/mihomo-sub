@@ -86,9 +86,17 @@ if [ ! -f "${CONFIG_DIR}/config.yaml" ]; then
     echo "📄 初始化 mihomo 配置"
 fi
 
-# 若设置了 SECRET 且配置中缺少 secret 行，补上（sub.sh 每次刷新也会强制写入）
-if [ -n "${SECRET}" ] && ! grep -qE '^[[:space:]]*secret:' "${CONFIG_DIR}/config.yaml" 2>/dev/null; then
-    SECRET_ESC=$(printf '%s' "${SECRET}" | sed 's/\\/\\\\/g; s/"/\\"/g')
+# SECRET 同步进 config.yaml：存在则替换、没有则追加（sub.sh 每次刷新同样会强制写入）。
+# 不能只在“缺少时才追加”：改密钥/去掉密钥后，配置里的旧 secret 与新值不一致，
+# 启动探测会一直 401/403 → 容器重启循环；而 sub.sh 要等探测通过才会运行，无法自愈。
+SECRET_ESC=$(printf '%s' "${SECRET}" | sed 's/\\/\\\\/g; s/"/\\"/g')
+if grep -qE '^secret:' "${CONFIG_DIR}/config.yaml" 2>/dev/null; then
+    SECRET_ESC="${SECRET_ESC}" awk '
+        /^secret:/ { print "secret: \"" ENVIRON["SECRET_ESC"] "\""; next }
+        { print }
+    ' "${CONFIG_DIR}/config.yaml" > "${CONFIG_DIR}/config.yaml.tmp" && \
+        mv "${CONFIG_DIR}/config.yaml.tmp" "${CONFIG_DIR}/config.yaml"
+else
     printf 'secret: "%s"\n' "${SECRET_ESC}" >> "${CONFIG_DIR}/config.yaml"
 fi
 

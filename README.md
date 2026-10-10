@@ -221,6 +221,18 @@ docker exec mihomo-sub /etc/periodic/15min/sub.sh --now
   要加引号请包住整个条目（`- "SECRET=xxx"`）或改用映射写法（`SECRET: "xxx"`）；
 - 密码含 `$` 时 compose 会做变量替换，需要写成 `$$`（或者用 `.env` 文件）。
 
+**Q: 换了 SECRET（或去掉密码）后容器反复重启、:9091 打不开？**
+
+修过。旧逻辑只在 `config.yaml` 缺少 secret 行时才写入：改密钥后配置里仍是旧值，
+启动探测用新密钥一直 401 → 重启循环（`sub.sh` 要等探测通过才运行，无法自愈）。
+现在的版本每次启动都会把有效密钥强制同步进 `config.yaml`，不会再出现。
+升级前中招的话：删掉数据卷 `config.yaml` 里 `secret:` 那一行再启动即可，初始化脚本会补上新密钥：
+
+```bash
+sed -i '/^secret:/d' mihomo-config/config.yaml
+docker compose up -d
+```
+
 **Q: 想开 TUN 全局代理，overlay.yaml 是必须的吗？**
 
 不是。TUN 有三种开法：

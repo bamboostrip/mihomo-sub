@@ -103,14 +103,13 @@ docker run -d \
 | `sub_urls.txt` | 订阅链接列表（一行一个；可带别名，格式 `别名<TAB>URL`，无别名即纯 URL 老格式；第三列 `off` = 停用） |
 | `schedule.conf` | 定时策略 (`15min` / `hourly` / `daily`) |
 | `group_mode.conf` | 多账号合并方式（`merge` 合并策略组（默认）/ `isolate` 按账号隔离） |
-| `tun_mode.conf` | TUN 全局代理开关（`on`/`off`，管理页开关写入；开启时每次刷新自动生成 tun 段） |
 | `user_agent.txt` | 自定义 User-Agent（一行，可选） |
 | `geoip.metadb` | GeoIP 数据库（首次启动自动复制，可选） |
 | `geosite.dat` | GeoSite 数据库（首次启动自动复制，可选） |
 | `config.yaml` | mihomo 代理配置（自动生成） |
 | `config.yaml.good` | 上一份刷新成功的配置（失败自动回滚用） |
 | `config.yaml.bad` | 重载被拒时的失败配置（排查用） |
-| `overlay.yaml` | 可选自定义覆盖层（DNS / 规则，不存在则跳过） |
+| `overlay.yaml` | 可选覆盖层（DNS / 规则 / TUN）；管理页 TUN 开关就是编辑这里的 tun 段 |
 | `.secret` | `SECRET` 持久化文件（设置后自动生成） |
 | `log.txt` | 更新日志 |
 | `usage/` | 各订阅流量存档（`subscription-userinfo` 解析，管理页用量条用） |
@@ -233,18 +232,21 @@ sed -i '/^secret:/d' mihomo-config/config.yaml
 docker compose up -d
 ```
 
-**Q: 想开 TUN 全局代理，overlay.yaml 是必须的吗？**
+**Q: 想开 TUN 全局代理，怎么开？overlay.yaml 是必须的吗？**
 
-不是。TUN 有三种开法：
+模板配置里没有 TUN，直接改 `config.yaml` 会被订阅刷新覆盖。现在管理页开关和数据卷里的
+`overlay.yaml` 是**同一个东西的两张面孔**（开关就是该文件的图形编辑入口），配置的持久来源只有一处：
 
-1. **管理页开关（推荐）**：`:9091` 页面「TUN 全局代理」打开即可——每次刷新都会自动生成 tun 配置，
-   并把本机 `resolv.conf` 里的 DNS 服务器自动加进 `route-exclude-address`（防 host 模式解析被劫持），
-   持久有效（写入数据卷 `tun_mode.conf`），容器重启不丢。缺权限时开关会明确报错。
-2. **metacubexd 的 TUN 开关（只适合临时用）**：`:9090` 配置页的「开启 TUN 转发」只对当前运行生效——
-   订阅每次自动刷新都会重载配置文件，**重载后会被重置关闭**（实测确认），不要单独依赖它。
-3. **overlay.yaml 手写 tun 段（高级）**：完全自定义 mtu / stack / 排除地址，优先级最高，覆盖前两种的默认值。
+1. **管理页开关（推荐）**：`:9091` 页面「TUN 全局代理」点开启——自动在 `overlay.yaml` 写入 tun 段
+   （默认 `stack: mixed` / `mtu: 1500` / `auto-route` / `dns-hijack: any:53`，并把本机 `resolv.conf`
+   的 DNS 自动加进 `route-exclude-address`，防 host 模式解析被劫持）；已有自定义字段和注释不会被动。
+   点关闭 = 写 `tun.enable: false`（保留你的其他自定义）。切换立即 PATCH 生效，不用等刷新。
+2. **手写 `overlay.yaml`（等价方式）**：想完全自定义 mtu / stack / 排除地址就直接编辑这个文件，
+   页面开关会读出它的状态，两边始终一致。
+3. **`:9090` metacubexd 的 TUN 开关（只适合临时调试）**：只对当前运行生效——订阅每次自动刷新都会
+   重载配置，重载后恢复为 `overlay.yaml` 的状态；页面会检测不一致并提示，不要单独依赖它。
 
-TUN 需要容器权限（host 模式也一样），compose 里加：
+TUN 需要容器权限（host 模式也一样），仓库自带的 `docker-compose.yaml` 已配好：
 
 ```yaml
 cap_add:
@@ -253,7 +255,7 @@ devices:
   - /dev/net/tun:/dev/net/tun
 ```
 
-否则容器里起不来。`route-exclude-address` 的 CIDR 必须合法（IPv4 最大 `/32`，写错如 `/33` 会导致重载被拒并回滚）。
+`route-exclude-address` 的 CIDR 必须合法（IPv4 最大 `/32`，写错如 `/33` 会导致重载被拒并回滚）。
 
 **Q: 刷新失败会把配置搞坏吗？**
 

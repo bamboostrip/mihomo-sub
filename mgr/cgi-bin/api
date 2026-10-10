@@ -6,7 +6,6 @@ CONFIG_DIR="/root/.config/mihomo"
 SUB_URLS_FILE="${CONFIG_DIR}/sub_urls.txt"
 SCHEDULE_FILE="${CONFIG_DIR}/schedule.conf"
 GROUP_MODE_FILE="${CONFIG_DIR}/group_mode.conf"
-TUN_MODE_FILE="${CONFIG_DIR}/tun_mode.conf"
 LOG_FILE="${CONFIG_DIR}/log.txt"
 SUB_SCRIPT="/etc/periodic/15min/sub.sh"
 # 订阅行分隔符：别名<TAB>URL（TAB 不可能出现在 URL 里）
@@ -294,11 +293,28 @@ case "${action}" in
         ;;
 
     # ---------------------------
-    # TUN 全局代理开关：on/off（写入 tun_mode.conf，刷新生效）
-    # 开启前校验容器权限，缺 /dev/net/tun 或 NET_ADMIN 时给明确提示
-    # getstatus 额外返回 prereq（本容器是否具备）与 note（overlay 冲突提示）
+    # TUN 全局代理开关：与 overlay.yaml 联动（唯一持久源，界面即该文件的图形开关）
+    #   开启 = 在 overlay.yaml 写入 tun.enable: true（缺失字段自动补默认值 + 本机 DNS 排除，
+    #          不覆盖用户已有自定义；yq 保留注释）
+    #   关闭 = 写 tun.enable: false（保留文件里的其他自定义）
+    # 切换后立即 PATCH 运行中的 mihomo（9090 面板状态马上一致）并触发刷新兜底。
+    # GET 返回 prereq（容器权限）与 runtime（当前运行状态，用于发现 9090 面板的临时改动）。
     # ---------------------------
     tunmode)
+        OVERLAY_FILE="${CONFIG_DIR}/overlay.yaml"
+        overlay_tun_state() {
+            [ -f "${OVERLAY_FILE}" ] || { printf 'none'; return; }
+            if command -v yq >/dev/null 2>&1; then
+                v=$(yq -r '.tun.enable' "${OVERLAY_FILE}" 2>/dev/null | head -1)
+                case "${v}" in
+                    true) printf 'on' ;;
+                    false) printf 'off' ;;
+                    *) printf 'none' ;;
+                esac
+            else
+                printf 'unknown'
+            fi
+        }
         if [ "${REQUEST_METHOD}" = "POST" ]; then
             body=$(read_body)
             val=$(echo "${body}" | sed -n 's/.*mode=\([^&]*\).*/\1/p')
@@ -306,6 +322,10 @@ case "${action}" in
                 on|off) ;;
                 *) printf '{"error":"无效模式，可选: on, off"}\n'; exit 0 ;;
             esac
+            if ! command -v yq >/dev/null 2>&1; then
+                printf '{"error":"容器内缺少 yq，无法编辑 overlay.yaml"}\n'
+                exit 0
+            fi
             if [ "${val}" = "on" ]; then
                 if [ ! -e /dev/net/tun ]; then
                     printf '{"error":"缺少 /dev/net/tun，请在 compose 添加 devices 映射（/dev/net/tun:/dev/net/tun）后重建容器"}\n'
@@ -316,12 +336,15 @@ case "${action}" in
                     exit 0
                 fi
             fi
-            echo "${val}" > "${TUN_MODE_FILE}"
-            # 立即生效：PATCH 运行中的 mihomo（两个面板状态马上一致）。
-            # 失败不阻断：接下来触发的刷新会按配置文件兜底生效。
-            api_secret=$(tr -d '[:space:]' < "${CONFIG_DIR}/.secret" 2>/dev/null)
+            if [ "${val}" = "off" ] && [ ! -f "${OVERLAY_FILE}" ]; then
+                # 没有 overlay 本来就等于关闭，无需创建文件
+                printf '{"success":true,"mode":"off","patched":false}\n'
+                exit 0
+            fi
+            [ -f "${OVERLAY_FILE}" ] || : > "${OVERLAY_FILE}"
+            # 本机 DNS 排除（host 模式 TUN 接管整机，不排除会导致解析异常）
+            tun_ex=""
             if [ "${val}" = "on" ]; then
-                tun_ex=""
                 for dip in $(grep -iE '^[[:space:]]*nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}'); do
                     dip="${dip%%\%*}"
                     case "${dip}" in
@@ -329,6 +352,22 @@ case "${action}" in
                         *.*) tun_ex="${tun_ex:+,}\"${dip}/32\"" ;;
                     esac
                 done
+                # 只补缺失字段，不覆盖用户已有自定义（yq 保留注释）
+                yq -i '.tun.enable = true' "${OVERLAY_FILE}" 2>/dev/null
+                [ "$(yq -r '.tun.stack' "${OVERLAY_FILE}" 2>/dev/null)" = "null" ] && yq -i '.tun.stack = "mixed"' "${OVERLAY_FILE}" 2>/dev/null
+                [ "$(yq -r '.tun.mtu' "${OVERLAY_FILE}" 2>/dev/null)" = "null" ] && yq -i '.tun.mtu = 1500' "${OVERLAY_FILE}" 2>/dev/null
+                [ "$(yq -r '.tun["auto-route"]' "${OVERLAY_FILE}" 2>/dev/null)" = "null" ] && yq -i '.tun["auto-route"] = true' "${OVERLAY_FILE}" 2>/dev/null
+                [ "$(yq -r '.tun["auto-detect-interface"]' "${OVERLAY_FILE}" 2>/dev/null)" = "null" ] && yq -i '.tun["auto-detect-interface"] = true' "${OVERLAY_FILE}" 2>/dev/null
+                [ "$(yq -r '.tun["dns-hijack"]' "${OVERLAY_FILE}" 2>/dev/null)" = "null" ] && yq -i '.tun["dns-hijack"] = ["any:53"]' "${OVERLAY_FILE}" 2>/dev/null
+                if [ "$(yq -r '.tun["route-exclude-address"]' "${OVERLAY_FILE}" 2>/dev/null)" = "null" ] && [ -n "${tun_ex}" ]; then
+                    yq -i ".tun[\"route-exclude-address\"] = [${tun_ex}]" "${OVERLAY_FILE}" 2>/dev/null
+                fi
+            else
+                yq -i '.tun.enable = false' "${OVERLAY_FILE}" 2>/dev/null
+            fi
+            # 立即生效：PATCH 运行中的 mihomo（两个面板状态马上一致）；失败不阻断，刷新兜底
+            api_secret=$(tr -d '[:space:]' < "${CONFIG_DIR}/.secret" 2>/dev/null)
+            if [ "${val}" = "on" ]; then
                 ex_part=""
                 [ -n "${tun_ex}" ] && ex_part=",\"route-exclude-address\":[${tun_ex}]"
                 payload=$(printf '{"tun":{"enable":true,"stack":"mixed","mtu":1500,"auto-route":true,"auto-detect-interface":true,"dns-hijack":["any:53"]%s}}' "${ex_part}")
@@ -346,28 +385,11 @@ case "${action}" in
             esac
             printf '{"success":true,"mode":"%s","patched":%s}\n' "${val}" "${patched}"
         else
-            val=$(head -1 "${TUN_MODE_FILE}" 2>/dev/null)
-            case "${val}" in on) val="on" ;; *) val="off" ;; esac
+            case "$(overlay_tun_state)" in
+                on) val="on" ;;
+                *) val="off" ;;
+            esac
             if tun_prereq; then preq=true; else preq=false; fi
-            locked=false
-            note=""
-            if [ -f "${CONFIG_DIR}/overlay.yaml" ]; then
-                oe=""
-                if command -v yq >/dev/null 2>&1; then
-                    oe=$(yq -r '.tun.enable' "${CONFIG_DIR}/overlay.yaml" 2>/dev/null | head -1)
-                fi
-                case "${oe}" in
-                    true|false)
-                        locked=true
-                        note="overlay.yaml 设置了 tun.enable=${oe}，页面开关不会生效（以 overlay 为准）"
-                        ;;
-                    *)
-                        if grep -qE '^[[:space:]]*tun:' "${CONFIG_DIR}/overlay.yaml" 2>/dev/null; then
-                            note="overlay.yaml 里也有 tun 段（未设置 enable），开关仍控制总开关"
-                        fi
-                        ;;
-                esac
-            fi
             # 当前运行状态（用于发现 9090 面板的临时改动，与预期不一致时页面给出提示）
             runtime=""
             if command -v jq >/dev/null 2>&1; then
@@ -382,7 +404,7 @@ case "${action}" in
                     false) runtime="off" ;;
                 esac
             fi
-            printf '{"mode":"%s","prereq":%s,"locked":%s,"runtime":"%s","note":"%s"}\n' "${val}" "${preq}" "${locked}" "${runtime}" "${note}"
+            printf '{"mode":"%s","prereq":%s,"runtime":"%s"}\n' "${val}" "${preq}" "${runtime}"
         fi
         ;;
 

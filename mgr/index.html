@@ -156,6 +156,39 @@ h1 {
     color: #fff;
 }
 
+.sub-enable {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+.sub-solo {
+    background: none;
+    border: 1px solid var(--warning);
+    color: var(--warning);
+    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    transition: all 0.15s;
+}
+.sub-solo:hover {
+    background: var(--warning);
+    color: #fff;
+}
+.sub-item.disabled .sub-url { opacity: 0.55; }
+.sub-offtag {
+    flex-shrink: 0;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    border: 1px dashed var(--border);
+    padding: 3px 8px;
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+}
+
 .add-form {
     display: flex;
     gap: 8px;
@@ -290,6 +323,7 @@ h1 {
         <input class="add-input" id="subInput" placeholder="输入订阅 URL（http:// 或 https://）" autocomplete="off">
         <button class="btn btn-primary" onclick="addSub()">＋ 添加</button>
     </div>
+    <div class="use-text" style="margin-top:10px">勾选框控制启用/停用（可多选合并）；「切换」= 只用这一个订阅（Verge 式切换，自动刷新）。改动刷新后生效。</div>
 </div>
 
 <!-- 调度设置卡片 -->
@@ -374,19 +408,29 @@ async function loadSubs() {
         return;
     }
     data.subscriptions.forEach(s => {
-        // 兼容老数据：字符串，或 {url, alias} 对象
+        // 兼容老数据：字符串，或 {url, alias, enabled} 对象
         let url = (s && s.url) || s;
         let alias = (s && s.alias) || '';
+        let enabled = !(s && s.enabled === false);
         let li = document.createElement('li');
-        li.className = 'sub-item';
+        li.className = 'sub-item' + (enabled ? '' : ' disabled');
         let badge = alias ? '<span class="sub-alias">' + escHtml(alias) + '</span>' : '';
+        let offTag = enabled ? '' : '<span class="sub-offtag">已停用</span>';
         li.innerHTML =
             '<div class="sub-row">' +
-            badge +
+            '<input type="checkbox" class="sub-enable" title="启用/停用（可多选合并）"' + (enabled ? ' checked' : '') + '>' +
+            badge + offTag +
             '<span class="sub-url">' + escHtml(url) + '</span>' +
+            '<button class="sub-solo" title="只用这一个订阅（停用其他），自动刷新">切换</button>' +
             '<button class="sub-edit" onclick="renSub(this)">改名</button>' +
             '<button class="sub-del" onclick="delSub(this)">删除</button>' +
             '</div><div class="sub-use"></div>';
+        li.querySelector('.sub-enable').addEventListener('change', function() {
+            toggleSub(url, this.checked);
+        });
+        li.querySelector('.sub-solo').addEventListener('click', function() {
+            soloSub(url);
+        });
         li.querySelector('.sub-del').dataset.url = url;
         li.querySelector('.sub-edit').dataset.url = url;
         li.querySelector('.sub-edit').dataset.alias = alias;
@@ -468,6 +512,24 @@ async function delSub(btn) {
     if (r.error) { toast(r.error, false); return; }
     toast('订阅已删除', true);
     loadSubs();
+}
+
+// 启用/停用订阅（可多选，刷新后生效）
+async function toggleSub(url, enabled) {
+    let r = await api('toggle', 'POST', 'url=' + encodeURIComponent(url) + '&enabled=' + (enabled ? '1' : '0'));
+    if (r.error) { toast(r.error, false); return; }
+    toast(enabled ? '已启用，刷新后生效' : '已停用，刷新后生效', true);
+    loadSubs();
+}
+
+// Verge 式切换：只启用这一个订阅并刷新（配置整体替换为该订阅的节点/组/规则）
+async function soloSub(url) {
+    let r = await api('solo', 'POST', 'url=' + encodeURIComponent(url));
+    if (r.error) { toast(r.error, false); return; }
+    await api('refresh');
+    toast('已切换，正在刷新…', true);
+    loadSubs();
+    setTimeout(loadLogs, 1500);
 }
 
 // 设置调度

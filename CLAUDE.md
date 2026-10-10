@@ -44,7 +44,7 @@ Docker 化的 mihomo（clash meta）代理方案，内置 Web 管理页面、多
 ```
 check_schedule（非 --now 时检查 last_run 时间戳）
   → 清理 subconverter 缓存
-  → 读取 sub_urls.txt（去 \r、跳过空行和 # 注释——别名以 # 开头时该行含 TAB，不视为注释；支持 `别名<TAB>URL`）
+  → 读取 sub_urls.txt（去 \r、跳过空行和 # 注释——别名以 # 开头时该行含 TAB，不视为注释；支持 `别名<TAB>URL`，第三列 `off` 表示停用，跳过不下载）
   → 对每个 URL:
      ├─ curl 直接下载（UA=clash-verge/v2.5.1，可通过 user_agent.txt 覆盖）
      ├─ 检测内容含 ^proxies: → 直接当 Clash YAML 用
@@ -64,6 +64,8 @@ check_schedule（非 --now 时检查 last_run 时间戳）
 | `delete` | POST | 删除订阅 (body: url=...)，按 URL 部分匹配 |
 | `rename` | POST | 修改别名 (body: url=...&alias=...，留空清除) |
 | `groupmode` | GET/POST | 查看/切换多账号合并方式 (`merge` 合并策略组 / `isolate` 按账号隔离) |
+| `toggle` | POST | 启用/停用订阅 (body: url=...&enabled=1/0，写第三列 `off`) |
+| `solo` | POST | 只启用这一条订阅 (body: url=...，其他全部停用，Verge 式切换) |
 | `usage` | GET | 各订阅流量 `[{url,alias,upload,download,total,expire}]` |
 | `refresh` | GET | 后台触发 sub.sh --now |
 | `schedule` | GET/POST | 查看/修改定时策略 |
@@ -74,7 +76,7 @@ check_schedule（非 --now 时检查 last_run 时间戳）
 
 | 文件 | 写方 | 说明 |
 |------|------|------|
-| `sub_urls.txt` | 管理页面/CGI | 订阅 URL，一行一个，支持 # 注释；可带别名 `别名<TAB>URL` |
+| `sub_urls.txt` | 管理页面/CGI | 订阅 URL，一行一个，支持 # 注释；可带别名 `别名<TAB>URL`，第三列 `off` 表示停用 |
 | `schedule.conf` | 管理页面/CGI | `15min` / `hourly` / `daily` |
 | `group_mode.conf` | 管理页面/CGI | `merge`（默认，同名策略组合并成员）/ `isolate`（按账号隔离前缀） |
 | `user_agent.txt` | 手动创建 | 自定义 UA，默认 `clash-verge/v2.5.1` |

@@ -432,11 +432,11 @@ while IFS= read -r line || [ -n "${line}" ]; do
             ;;
     esac
 
-    sub_count=$((sub_count + 1))
-    # 订阅行格式：纯 URL，或 "别名<TAB>URL"（TAB 不可能出现在 URL 里）
-    # 无 TAB 即老格式，保持兼容
+    # 订阅行格式：纯 URL，或 "别名<TAB>URL"，第三列 "off" 表示已停用
+    #（TAB 不可能出现在 URL 里；无 TAB 即老格式，保持兼容）
     _f1=$(printf '%s' "${line}" | cut -f1)
     _f2=$(printf '%s' "${line}" | cut -f2)
+    _f3=$(printf '%s' "${line}" | cut -f3)
     if [ "${_f2}" = "${line}" ]; then
         SUB_ALIAS=""
         sub_url="${line}"
@@ -445,9 +445,16 @@ while IFS= read -r line || [ -n "${line}" ]; do
         sub_url="${_f2}"
     fi
     if [ -z "${sub_url}" ]; then
-        log="${log}Error: 订阅 ${sub_count}${log_tag} 地址为空，已跳过\n\t"
+        log="${log}Error: 订阅地址为空，已跳过\n\t"
         continue
     fi
+    # 已停用（管理页「切换」会把其他订阅置为 off）：不下载、不合并
+    if [ "${_f3}" = "off" ]; then
+        log="${log}订阅 [${SUB_ALIAS}] 已停用，跳过\n\t"
+        say "⏸ 订阅 [${SUB_ALIAS}] 已停用，跳过"
+        continue
+    fi
+    sub_count=$((sub_count + 1))
     if [ -n "${SUB_ALIAS}" ]; then
         log_tag=" [${SUB_ALIAS}]"
     else
@@ -558,6 +565,12 @@ while IFS= read -r line || [ -n "${line}" ]; do
     fi
 
 done < "${SUB_URLS_FILE}"
+
+if [ "${sub_count}" -eq 0 ]; then
+    log="${log}Error: 没有启用的订阅，保留现有配置\n\t"
+    say "⏸ 没有启用的订阅，已保留原配置"
+    sub_end 1
+fi
 
 if [ "${success_count}" -eq 0 ]; then
     log="${log}Error: 所有订阅均失败，保留现有配置\n\t"

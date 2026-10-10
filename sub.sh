@@ -12,6 +12,7 @@ LOG_FILE="${CONFIG_DIR}/log.txt"
 SUB_URLS_FILE="${CONFIG_DIR}/sub_urls.txt"
 SCHEDULE_FILE="${CONFIG_DIR}/schedule.conf"
 GROUP_MODE_FILE="${CONFIG_DIR}/group_mode.conf"
+TUN_MODE_FILE="${CONFIG_DIR}/tun_mode.conf"
 LAST_RUN_FILE="${CONFIG_DIR}/last_run"
 UA_FILE="${CONFIG_DIR}/user_agent.txt"
 TEMP_DIR="/tmp/mihomo_sub"
@@ -41,6 +42,15 @@ GROUP_MODE=$(head -1 "${GROUP_MODE_FILE}" 2>/dev/null)
 case "${GROUP_MODE}" in
     isolate) GROUP_MODE="isolate" ;;
     *) GROUP_MODE="merge" ;;
+esac
+
+# TUN 全局代理（管理页面可切换，默认关）：
+#   on  = 生成的配置里写入默认 tun 段（含自动排除本机 DNS，防 host 模式劫持解析）
+#   off = 不写（overlay.yaml 里如有 tun 段仍以 overlay 为准）
+TUN_MODE=$(head -1 "${TUN_MODE_FILE}" 2>/dev/null)
+case "${TUN_MODE}" in
+    on|ON|true|enable|1) TUN_MODE="on" ;;
+    *) TUN_MODE="off" ;;
 esac
 
 # YAML 双引号转义（secret 写入配置时用）
@@ -737,6 +747,30 @@ SECRET_ESC=$(yaml_escape "${SECRET}")
     fi
 
     printf '%s\n' 'external-controller: 0.0.0.0:9090'
+
+    # TUN 全局代理（网页开关开启时写入默认段；overlay.yaml 里如有 tun 仍以 overlay 为准）
+    if [ "${TUN_MODE}" = "on" ]; then
+        printf '%s\n' 'tun:'
+        printf '%s\n' '  enable: true'
+        printf '%s\n' '  stack: mixed'
+        printf '%s\n' '  mtu: 1500'
+        printf '%s\n' '  auto-route: true'
+        printf '%s\n' '  auto-detect-interface: true'
+        printf '%s\n' '  dns-hijack:'
+        printf '%s\n' '    - any:53'
+        # 自动排除本机 DNS 服务器：host 网络下 TUN 接管整机，不排除会导致解析异常
+        dns_list=$(grep -iE '^[[:space:]]*nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}')
+        if [ -n "${dns_list}" ]; then
+            printf '%s\n' '  route-exclude-address:'
+            printf '%s\n' "${dns_list}" | while IFS= read -r dns_ip; do
+                dns_ip="${dns_ip%%\%*}"
+                case "${dns_ip}" in
+                    *:*) printf '    - %s/128\n' "${dns_ip}" ;;
+                    *.*) printf '    - %s/32\n' "${dns_ip}" ;;
+                esac
+            done
+        fi
+    fi
 } > "${CONFIG_FILE}.new"
 
 if [ ! -s "${CONFIG_FILE}.new" ]; then

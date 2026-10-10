@@ -4,6 +4,9 @@
 
 ### 新增
 
+- **TUN 网页开关**：管理页「TUN 全局代理」一键开关（写入 `tun_mode.conf`），开启后每次刷新自动生成
+  tun 段并自动排除本机 DNS（防 host 模式劫持解析）；缺 `/dev/net/tun` 或 `NET_ADMIN` 时开关明确报错；
+  overlay.yaml 里的 tun 段优先级更高可做高级覆盖
 - **管理页面端口可改 + 可选密码**：`MGMT_PORT` 指定管理页面端口（默认 9091；`network_mode: host`
   下 `-p` 映射不生效时用它）；`MGR_PASSWORD` 开启 Basic 鉴权（用户名 `MGR_USER`，默认 admin），
   页面与 CGI 全部操作受保护，留空无密码（兼容旧行为），`off` 显式关闭；密码持久化在 `.mgr_password`

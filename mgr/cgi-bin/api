@@ -6,6 +6,7 @@ CONFIG_DIR="/root/.config/mihomo"
 SUB_URLS_FILE="${CONFIG_DIR}/sub_urls.txt"
 SCHEDULE_FILE="${CONFIG_DIR}/schedule.conf"
 GROUP_MODE_FILE="${CONFIG_DIR}/group_mode.conf"
+TUN_MODE_FILE="${CONFIG_DIR}/tun_mode.conf"
 LOG_FILE="${CONFIG_DIR}/log.txt"
 SUB_SCRIPT="/etc/periodic/15min/sub.sh"
 # 订阅行分隔符：别名<TAB>URL（TAB 不可能出现在 URL 里）
@@ -43,6 +44,15 @@ emit_line() {
     else
         if [ "$3" = "off" ]; then printf '\t%s\toff\n' "$2"; else printf '%s\n' "$2"; fi
     fi
+}
+
+# TUN 可用性检查：/dev/net/tun 存在 + 容器持有 NET_ADMIN（CapEff bit12 = 0x1000）
+tun_prereq() {
+    [ -e /dev/net/tun ] || return 1
+    cap=$(awk '/^CapEff:/{print $2}' /proc/self/status 2>/dev/null)
+    [ -n "${cap}" ] || return 1
+    [ $(( 0x${cap} & 4096 )) -ne 0 ] || return 1
+    return 0
 }
 
 # 注释判断：行首 # 且不含 TAB 才算注释（含 TAB 是“别名以 # 开头”的订阅行）
@@ -274,6 +284,43 @@ case "${action}" in
             printf '{"error":"订阅不存在"}\n'
         else
             printf '{"success":true,"message":"已切换，仅启用该订阅"}\n'
+        fi
+        ;;
+
+    # ---------------------------
+    # TUN 全局代理开关：on/off（写入 tun_mode.conf，刷新生效）
+    # 开启前校验容器权限，缺 /dev/net/tun 或 NET_ADMIN 时给明确提示
+    # getstatus 额外返回 prereq（本容器是否具备）与 note（overlay 冲突提示）
+    # ---------------------------
+    tunmode)
+        if [ "${REQUEST_METHOD}" = "POST" ]; then
+            body=$(read_body)
+            val=$(echo "${body}" | sed -n 's/.*mode=\([^&]*\).*/\1/p')
+            case "${val}" in
+                on|off) ;;
+                *) printf '{"error":"无效模式，可选: on, off"}\n'; exit 0 ;;
+            esac
+            if [ "${val}" = "on" ]; then
+                if [ ! -e /dev/net/tun ]; then
+                    printf '{"error":"缺少 /dev/net/tun，请在 compose 添加 devices 映射（/dev/net/tun:/dev/net/tun）后重建容器"}\n'
+                    exit 0
+                fi
+                if ! tun_prereq; then
+                    printf '{"error":"缺少 NET_ADMIN 权限，请在 compose 添加 cap_add: NET_ADMIN 后重建容器"}\n'
+                    exit 0
+                fi
+            fi
+            echo "${val}" > "${TUN_MODE_FILE}"
+            printf '{"success":true,"mode":"%s"}\n' "${val}"
+        else
+            val=$(head -1 "${TUN_MODE_FILE}" 2>/dev/null)
+            case "${val}" in on) val="on" ;; *) val="off" ;; esac
+            if tun_prereq; then preq=true; else preq=false; fi
+            note=""
+            if [ -f "${CONFIG_DIR}/overlay.yaml" ] && grep -qE '^[[:space:]]*tun:' "${CONFIG_DIR}/overlay.yaml" 2>/dev/null; then
+                note="overlay.yaml 里也有 tun 段，最终配置以 overlay 为准"
+            fi
+            printf '{"mode":"%s","prereq":%s,"note":"%s"}\n' "${val}" "${preq}" "${note}"
         fi
         ;;
 

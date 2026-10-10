@@ -51,7 +51,7 @@ check_schedule（非 --now 时检查 last_run 时间戳）
      ├─ 否则 → 交给 subconverter(:25500) 转换
      └─ 有别名 → 节点名加 `别名 | ` 前缀（group_mode=isolate 时策略组名/引用也加；两遍扫描保证一致）
   → 提取 proxies / rules / proxy-groups → 合并：节点同名保留首次、同名策略组合并成员、规则整行去重
-  → 生成 config.yaml → PUT :9090/configs 热重载
+  → 生成 config.yaml（tun_mode.conf=on 时写入默认 tun 段并自动排除本机 DNS）→ PUT :9090/configs 热重载
   → 记录 last_run 时间戳 → 写日志（超 1MB 自动截断末尾 50KB）
 ```
 
@@ -66,6 +66,7 @@ check_schedule（非 --now 时检查 last_run 时间戳）
 | `groupmode` | GET/POST | 查看/切换多账号合并方式 (`merge` 合并策略组 / `isolate` 按账号隔离) |
 | `toggle` | POST | 启用/停用订阅 (body: url=...&enabled=1/0，写第三列 `off`) |
 | `solo` | POST | 只启用这一条订阅 (body: url=...，其他全部停用，Verge 式切换) |
+| `tunmode` | GET/POST | 查看/切换 TUN 全局代理 (`on`/`off`；GET 返回 `prereq` 权限状态与 overlay 冲突提示) |
 | `usage` | GET | 各订阅流量 `[{url,alias,upload,download,total,expire}]` |
 | `refresh` | GET | 后台触发 sub.sh --now |
 | `schedule` | GET/POST | 查看/修改定时策略 |
@@ -79,6 +80,7 @@ check_schedule（非 --now 时检查 last_run 时间戳）
 | `sub_urls.txt` | 管理页面/CGI | 订阅 URL，一行一个，支持 # 注释；可带别名 `别名<TAB>URL`，第三列 `off` 表示停用 |
 | `schedule.conf` | 管理页面/CGI | `15min` / `hourly` / `daily` |
 | `group_mode.conf` | 管理页面/CGI | `merge`（默认，同名策略组合并成员）/ `isolate`（按账号隔离前缀） |
+| `tun_mode.conf` | 管理页面/CGI | `on`/`off`（默认 off）；on 时每次刷新在配置里写入默认 tun 段 |
 | `user_agent.txt` | 手动创建 | 自定义 UA，默认 `clash-verge/v2.5.1` |
 | `overlay.yaml` | 手动创建（可选） | 自定义覆盖层，不存在则跳过；受管字段不被覆盖 |
 | `.secret` | init.sh（SECRET 非空时） | API 密钥持久化；SECRET 为空则无此鉴权 |
@@ -112,6 +114,7 @@ check_schedule（非 --now 时检查 last_run 时间戳）
 ## 注意事项
 
 - **管理页面鉴权/端口** — `MGR_PASSWORD` 设置后 :9091 页面与 CGI 全部走 Basic 鉴权（密码哈希用 base busybox 的 `cryptpw -m md5` 生成，写入 `httpd.conf`）；`MGMT_PORT` 改监听端口（`network_mode: host` 下 `-p` 不生效，只能靠它）；两者留空 = 旧行为
+- **TUN** — 管理页开关（`tun_mode.conf`）持久有效、每次刷新自动带 tun 段并排除本机 DNS；**metacubexd 自带的 TUN 开关只对当前运行生效，订阅刷新重载后会被重置关闭（实测）**，只适合临时调试；容器需 `/dev/net/tun` + `NET_ADMIN`（compose 配一次），缺权限时 CGI `tunmode` 会明确报错；overlay.yaml 的 tun 段优先级最高
 - **overlay.yaml 可选** — 不存在则跳过，纯 7890 代理模式照常；TUN 等自定义配置放这里，直接改 config.yaml 会在刷新时被重写；`route-exclude-address` 的 CIDR 必须合法（IPv4 最大 /32），否则重载被拒回滚
 - **合并方式** — `group_mode.conf` 为 `merge`（默认）时：别名只改节点名，同名策略组跨订阅并成员（含不同机场的同名通用组），规则整行去重；`isolate` 时策略组/规则按账号加前缀完全隔离。页面切换后需等刷新完成才生效
 - **subconverter 直连优先** — sub.sh 先 curl 直接下载并正确设置 UA，内容已是 Clash YAML 则跳过转换；只有非 Clash 格式才走 subconverter 兜底。全部请求绕开代理变量，防自环

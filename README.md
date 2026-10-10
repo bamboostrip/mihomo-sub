@@ -99,6 +99,7 @@ docker run -d \
 | `sub_urls.txt` | 订阅链接列表（一行一个；可带别名，格式 `别名<TAB>URL`，无别名即纯 URL 老格式；第三列 `off` = 停用） |
 | `schedule.conf` | 定时策略 (`15min` / `hourly` / `daily`) |
 | `group_mode.conf` | 多账号合并方式（`merge` 合并策略组（默认）/ `isolate` 按账号隔离） |
+| `tun_mode.conf` | TUN 全局代理开关（`on`/`off`，管理页开关写入；开启时每次刷新自动生成 tun 段） |
 | `user_agent.txt` | 自定义 User-Agent（一行，可选） |
 | `geoip.metadb` | GeoIP 数据库（首次启动自动复制，可选） |
 | `geosite.dat` | GeoSite 数据库（首次启动自动复制，可选） |
@@ -208,11 +209,25 @@ docker exec mihomo-sub /etc/periodic/15min/sub.sh --now
 
 **Q: 想开 TUN 全局代理，overlay.yaml 是必须的吗？**
 
-不是必须。`overlay.yaml` 是可选的：没有这个文件，容器照样运行（普通 7890 端口代理模式）。
-如果需要 TUN，把 `tun` 段放进数据卷里的 `overlay.yaml`（`./mihomo-config/overlay.yaml`），
-每次刷新会深合并进去——直接改 `config.yaml` 不行，它会被订阅刷新重写。
-每台设备放一份即可（内容可复制）；`route-exclude-address` 里的 CIDR 必须是合法值（IPv4 最大 `/32`，
-写错如 `/33` 会导致重载被拒并回滚），且建议按该设备 `/etc/resolv.conf` 里的 DNS 服务器 IP 调整排除项。
+不是。TUN 有三种开法：
+
+1. **管理页开关（推荐）**：`:9091` 页面「TUN 全局代理」打开即可——每次刷新都会自动生成 tun 配置，
+   并把本机 `resolv.conf` 里的 DNS 服务器自动加进 `route-exclude-address`（防 host 模式解析被劫持），
+   持久有效（写入数据卷 `tun_mode.conf`），容器重启不丢。缺权限时开关会明确报错。
+2. **metacubexd 的 TUN 开关（只适合临时用）**：`:9090` 配置页的「开启 TUN 转发」只对当前运行生效——
+   订阅每次自动刷新都会重载配置文件，**重载后会被重置关闭**（实测确认），不要单独依赖它。
+3. **overlay.yaml 手写 tun 段（高级）**：完全自定义 mtu / stack / 排除地址，优先级最高，覆盖前两种的默认值。
+
+TUN 需要容器权限（host 模式也一样），compose 里加：
+
+```yaml
+cap_add:
+  - NET_ADMIN
+devices:
+  - /dev/net/tun:/dev/net/tun
+```
+
+否则容器里起不来。`route-exclude-address` 的 CIDR 必须合法（IPv4 最大 `/32`，写错如 `/33` 会导致重载被拒并回滚）。
 
 **Q: 刷新失败会把配置搞坏吗？**
 

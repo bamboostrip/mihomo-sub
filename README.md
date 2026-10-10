@@ -56,6 +56,10 @@
 
 ### Docker Compose（推荐）
 
+> 仓库根目录自带一份 `docker-compose.yaml`（已配好 host 网络 + TUN 权限，密码等均为注释示例），
+> 复制到任意目录后执行 `mkdir -p mihomo-config && docker compose up -d` 即可。
+> 下面是最小示例（桥接端口映射，不使用 TUN 的场景参考）：
+
 ```yaml
 services:
   mihomo:

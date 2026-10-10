@@ -6,6 +6,7 @@ Docker 化的 mihomo（clash meta）代理方案，内置 Web 管理页面、多
 
 ```
 ├── Dockerfile              # 镜像构建，多架构支持 (amd64/arm64/armv7/386)
+├── docker-compose.yaml     # 开箱即用 compose 示例（host+TUN 权限，密码注释示例）
 ├── init.sh                 # 容器 ENTRYPOINT，初始化 + 启动所有服务
 ├── sub.sh                  # 订阅更新脚本，cron 每 15 分钟触发
 ├── healthcheck.sh          # 健康检查（支持 SECRET 鉴权）

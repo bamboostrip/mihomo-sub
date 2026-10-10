@@ -1,0 +1,55 @@
+# mihomo-sub Docker Compose 示例
+#
+# 快速开始：
+#   1) 复制本文件到任意目录（仓库根目录自带这份也可直接用）
+#   2) mkdir -p mihomo-config        # 配置数据卷：订阅、密钥、开关、overlay.yaml 都放这里
+#   3) docker compose up -d
+#   4) 打开 http://<本机IP>:9091     # 订阅管理页（:9090/ui 是代理面板）
+#
+# 常用可选环境变量（去掉行首 # 即可生效）：
+#   SECRET        面板/API 密钥；留空 = 无密码（仅建议局域网）
+#   MGR_PASSWORD  管理页面(:9091)密码；留空 = 无密码；MGR_USER 改用户名（默认 admin）
+#   MGMT_PORT     管理页面端口（默认 9091；host 网络下改端口只能用它，不能用 -p 映射）
+#   sub_url       首次启动自动写入的初始订阅地址（之后在管理页维护/切换）
+#
+# TUN 全局代理：
+#   本文件已配好 host 网络 + /dev/net/tun + NET_ADMIN，启动后在管理页
+#   「TUN 全局代理」一键开启即可（每次刷新自动保持、自动排除本机 DNS），
+#   不需要手写 overlay.yaml；只有想自定义 mtu/stack/额外排除地址等才需要。
+#   不用 TUN 的话，可以注释掉 cap_add / devices 两段（并改用文件末尾的端口映射）。
+
+services:
+  mihomo-sub:
+    image: ghcr.io/bamboostrip/mihomo-sub:latest
+    # Docker Hub 备选（需镜像已推送）：image: bamboostrip/mihomo-sub:latest
+    # 本地自行构建：build: .
+    container_name: mihomo-sub
+    restart: unless-stopped
+    # TUN 全局代理需要 host 网络（否则 TUN 只管容器自己，接管不了整机流量）；
+    # 仅用 7890 端口代理的话，可改成桥接模式并启用文件末尾注释里的 ports 映射
+    network_mode: host
+    cap_add:
+      - NET_ADMIN                      # TUN 必需（不用 TUN 可注释）
+    devices:
+      - /dev/net/tun:/dev/net/tun      # TUN 必需（不用 TUN 可注释）
+    volumes:
+      - ./mihomo-config:/root/.config/mihomo   # 配置持久化；overlay.yaml 放这个目录里
+    environment:
+      - TZ=Asia/Shanghai
+      # - SECRET=change-me             # 面板/API 密钥（留空 = 无密码）
+      # - MGR_PASSWORD=change-me       # 管理页面密码（留空 = 无密码）
+      # - MGR_USER=admin               # 管理页面用户名（默认 admin）
+      # - MGMT_PORT=9091               # 管理页面端口（默认 9091）
+      # - sub_url=https://example.com/sub   # 首次启动的初始订阅（可选）
+    logging:                           # 限制 docker logs 体积，避免长期运行占盘
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+# 不用 host 网络（不用 TUN）时：把上面的 network_mode: host 注释掉，放开下面的 ports
+#    ports:
+#      - "7890:7890"    # 代理 mixed 端口（HTTP + SOCKS）
+#      - "9090:9090"    # mihomo API + metacubexd 面板（/ui）
+#      - "9091:9091"    # 订阅管理页
+#    此时也可用 MGMT_PORT 之外的端口映射，如 "18091:9091"

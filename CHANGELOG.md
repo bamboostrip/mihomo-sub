@@ -4,6 +4,9 @@
 
 ### 新增
 
+- **开箱即用 `docker-compose.yaml`**：仓库自带一份可直接拷贝使用的 compose 示例（host 网络 + `/dev/net/tun`
+  + NET_ADMIN 已配好，TUN 开关开箱可用；`SECRET` / `MGR_PASSWORD` / `MGMT_PORT` 等均为注释示例，
+  附桥接端口映射的替代写法）
 - **TUN 网页开关**：管理页「TUN 全局代理」一键开关（写入 `tun_mode.conf`），开启后每次刷新自动生成
   tun 段并自动排除本机 DNS（防 host 模式劫持解析）；缺 `/dev/net/tun` 或 `NET_ADMIN` 时开关明确报错；
   overlay.yaml 里的 tun 段优先级更高可做高级覆盖

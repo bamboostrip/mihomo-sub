@@ -214,7 +214,7 @@ case "${MGMT_PORT}" in
 esac
 HTTPD_ARGS=""
 if [ -n "${MGR_PASSWORD}" ]; then
-    MGR_HASH=$(cryptpw -m md5 "${MGR_PASSWORD}" 2>/dev/null)
+    MGR_HASH=$(cryptpw -m md5 -- "${MGR_PASSWORD}" 2>/dev/null)
     if [ -n "${MGR_HASH}" ]; then
         HTTPD_CONF="${CONFIG_DIR}/httpd.conf"
         printf '/:%s:%s\n' "${MGR_USER}" "${MGR_HASH}" > "${HTTPD_CONF}"

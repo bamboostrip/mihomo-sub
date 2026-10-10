@@ -211,6 +211,16 @@ docker exec mihomo-sub /etc/periodic/15min/sub.sh --now
 如需关闭设 `MGR_PASSWORD=off` 后重启一次。`:9090` 的 metacubexd 面板与 API 由 `SECRET` 控制，二者互相独立。
 `SECRET` 同样持久化在数据卷的 `.secret`，去掉环境变量不会自动清除旧密钥，如需关闭设 `SECRET=off` 后重启一次。
 
+**Q: SECRET / MGR_PASSWORD 可以用特殊字符吗？最长多少？**
+
+可以。`U*96ZQpcSYa%@fqL9DfpFzEZg^&zPidv` 这类 32 位随机串实测通过（mihomo 认证、页面 Basic 鉴权都验证过），
+256 位长密码也正常，没有硬性上限（建议 16~64 位随机字符）。注意几点：
+
+- **不要用空格和换行**：`SECRET` 读取时会去掉空白字符，重启后会对不上；
+- compose 的 `- KEY=value` 写法**不要给值单独加引号**（`- SECRET="xxx"` 会让引号变成密码的一部分），
+  要加引号请包住整个条目（`- "SECRET=xxx"`）或改用映射写法（`SECRET: "xxx"`）；
+- 密码含 `$` 时 compose 会做变量替换，需要写成 `$$`（或者用 `.env` 文件）。
+
 **Q: 想开 TUN 全局代理，overlay.yaml 是必须的吗？**
 
 不是。TUN 有三种开法：

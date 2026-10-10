@@ -169,20 +169,32 @@ extract_section() {
 }
 
 # ---------------------------
+# YAML 规范化：把各种手搓格式（flow 单行、顶格、 CRLF 等）统一为标准块样式
+# 后续的提取/重命名/去重全部基于规范化文本，不再需要猜缩进。
+# yq 失败（非法 YAML）则保留原文并告警，由后续逻辑按老行为处理。
+# ---------------------------
+normalize_yaml() {
+    file="$1"
+    command -v yq >/dev/null 2>&1 || return 0
+    yq -P -i '.' "${file}" 2>/dev/null || log="${log}Warning: YAML 规范化失败，沿用原文\n\t"
+}
+
+# ---------------------------
 # 别名前缀：将某订阅的节点名 / 策略组名统一改写为 "别名 | 原名"
 # 解决同一家多账号节点重名冲突，面板上也能区分流量归属。
-# 对 temp_file 原地改写前先做两遍扫描：第一遍建重命名映射，
-# 第二遍改写定义与引用（策略组成员、规则策略字段），保证引用一致。
+# 输入必须是 normalize_yaml 规范化后的文件：块样式、2 格缩进。
+# 规范化时非 ASCII 会被 yq 写成 "..." 包裹的转义序列，原样保留即可
+# （YAML 会正确解码）；只有用户输入的别名前缀需要转义。
+# 两遍扫描：第一遍建重命名映射，第二遍改写定义与引用，保证引用一致。
 # 无别名时不调用，保持原行为。
 # ---------------------------
 apply_alias_prefix() {
     file="$1"
     prefix="$2"
     tmp_renamed="${file}.renamed"
-    # 注意：条目匹配只容忍 0~2 格缩进。有些机场手搓的 YAML 把 "- name:" 顶格写，
-    # 必须覆盖；但更深缩进的是嵌套内容（如旧式 headers 下的 - name:），绝不能动。
     awk -v pre="${prefix}" '
-        function esc(s,   t) { t=s; gsub(/\\/, "\\\\", t); gsub(/["]/, "\\\"", t); return t }
+        function esc_pre(s,   t) { t=s; gsub(/\\/, "\\\\", t); gsub(/["]/, "\\\"", t); return t }
+        function esc_old(s,   t) { t=s; gsub(/\\"/, "\"", t); gsub(/["]/, "\\\"", t); return t }
         function norm(v,   k) { k=v; gsub(/^["]|["]$/, "", k); gsub(/^ +| +$/, "", k); return k }
         function is_top(key) { return (key ~ /^[A-Za-z][A-Za-z0-9_-]*:[ \t]*$/) }
         function entry_ind(s,   t) { t=s; sub(/- name:.*$/, "", t); return t }
@@ -206,14 +218,14 @@ apply_alias_prefix() {
             ind=entry_ind($0)
             v=$0; sub(/^[ \t]{0,2}- name: /, "", v)
             k=norm(v)
-            printf "%s- name: \"%s | %s\"\n", ind, esc(pre), esc(k)
+            printf "%s- name: \"%s | %s\"\n", ind, esc_pre(pre), esc_old(k)
             next
         }
         sec=="groups" && /^[ \t]*- / {
             ind=$0; sub(/-.*$/, "- ", ind)
             ref=$0; sub(/^[ \t]*- +/, "", ref)
             k=norm(ref)
-            if (k in mp) printf "%s\"%s | %s\"\n", ind, esc(pre), esc(k)
+            if (k in mp) printf "%s\"%s | %s\"\n", ind, esc_pre(pre), esc_old(k)
             else print
             next
         }
@@ -223,7 +235,7 @@ apply_alias_prefix() {
             key=f[n]; gsub(/^ +| +$/, "", key)
             if (key=="no-resolve" && n>=3) { idx=n-1; key=f[idx]; gsub(/^ +| +$/, "", key) }
             gsub(/^["]|["]$/, "", key)
-            if (key in mp) f[idx]="\"" esc(pre) " | " esc(key) "\""
+            if (key in mp) f[idx]="\"" esc_pre(pre) " | " esc_old(key) "\""
             out=f[1]
             for (i=2;i<=n;i++) out=out "," f[i]
             print out
@@ -359,6 +371,10 @@ while IFS= read -r line || [ -n "${line}" ]; do
         log="${log}Error: 订阅 ${sub_count}${log_tag} 处理后为空\n\t"
         continue
     fi
+
+    # 先规范化为标准块样式（flow/顶格/CRLF 等手搓格式统一），
+    # 后续提取/重命名/去重全部基于规范文本
+    normalize_yaml "${temp_file}"
 
     # 有别名则统一加前缀（节点名/策略组名/引用一起改，保证一致）
     if [ -n "${SUB_ALIAS}" ]; then

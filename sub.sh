@@ -179,16 +179,19 @@ apply_alias_prefix() {
     file="$1"
     prefix="$2"
     tmp_renamed="${file}.renamed"
+    # 注意：条目匹配只容忍 0~2 格缩进。有些机场手搓的 YAML 把 "- name:" 顶格写，
+    # 必须覆盖；但更深缩进的是嵌套内容（如旧式 headers 下的 - name:），绝不能动。
     awk -v pre="${prefix}" '
         function esc(s,   t) { t=s; gsub(/\\/, "\\\\", t); gsub(/["]/, "\\\"", t); return t }
         function norm(v,   k) { k=v; gsub(/^["]|["]$/, "", k); gsub(/^ +| +$/, "", k); return k }
         function is_top(key) { return (key ~ /^[A-Za-z][A-Za-z0-9_-]*:[ \t]*$/) }
+        function entry_ind(s,   t) { t=s; sub(/- name:.*$/, "", t); return t }
         NR==FNR {
             if ($0 ~ /^proxies:[ \t]*$/) { sec="proxies"; next }
             if ($0 ~ /^proxy-groups:[ \t]*$/) { sec="groups"; next }
             if (is_top($0)) { sec=""; next }
-            if ((sec=="proxies" || sec=="groups") && $0 ~ /^  - name: /) {
-                v=$0; sub(/^  - name: /, "", v)
+            if ((sec=="proxies" || sec=="groups") && $0 ~ /^[ \t]{0,2}- name: /) {
+                v=$0; sub(/^[ \t]{0,2}- name: /, "", v)
                 k=norm(v)
                 if (k != "" && !(k in mp)) mp[k]=1
             }
@@ -199,10 +202,11 @@ apply_alias_prefix() {
         $0 ~ /^proxy-groups:[ \t]*$/ { sec="groups"; print; next }
         $0 ~ /^rules:[ \t]*$/ { sec="rules"; print; next }
         is_top($0) { sec=""; print; next }
-        (sec=="proxies" || sec=="groups") && /^  - name: / {
-            v=$0; sub(/^  - name: /, "", v)
+        (sec=="proxies" || sec=="groups") && /^[ \t]{0,2}- name: / {
+            ind=entry_ind($0)
+            v=$0; sub(/^[ \t]{0,2}- name: /, "", v)
             k=norm(v)
-            printf "  - name: \"%s | %s\"\n", esc(pre), esc(k)
+            printf "%s- name: \"%s | %s\"\n", ind, esc(pre), esc(k)
             next
         }
         sec=="groups" && /^[ \t]*- / {
@@ -213,7 +217,7 @@ apply_alias_prefix() {
             else print
             next
         }
-        sec=="rules" && /^  - / {
+        sec=="rules" && /^[ \t]*- / {
             n=split($0, f, ",")
             idx=n
             key=f[n]; gsub(/^ +| +$/, "", key)
@@ -407,11 +411,11 @@ fi
 # 多订阅合并去重：同名节点只保留第一次出现
 # （mihomo 要求 proxies 内 name 唯一，重名会导致重载 400 被拒）
 if [ -n "${all_proxies}" ]; then
-    proxy_before=$(printf '%s' "${all_proxies}" | grep -cE '^  - name: ' || true)
+    proxy_before=$(printf '%s' "${all_proxies}" | grep -cE '^[ \t]{0,2}- name: ' || true)
     all_proxies=$(printf '%s' "${all_proxies}" | awk '
-        /^  - name: / {
+        /^[ \t]{0,2}- name: / {
             nm=$0
-            sub(/^  - name: /, "", nm)
+            sub(/^[ \t]{0,2}- name: /, "", nm)
             gsub(/^["]|["]$/, "", nm)
             gsub(/^ +| +$/, "", nm)
             if (nm in seen) { skip=1; next }
@@ -420,7 +424,7 @@ if [ -n "${all_proxies}" ]; then
         skip { next }
         { print }
     ')
-    proxy_after=$(printf '%s' "${all_proxies}" | grep -cE '^  - name: ' || true)
+    proxy_after=$(printf '%s' "${all_proxies}" | grep -cE '^[ \t]{0,2}- name: ' || true)
     # $() 会剥掉末尾换行，补回来（否则 proxies 块与下一节粘连）
     all_proxies="${all_proxies}
 "

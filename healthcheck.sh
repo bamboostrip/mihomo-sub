@@ -6,13 +6,20 @@
 CONFIG_DIR="/root/.config/mihomo"
 SECRET=""
 
+# 本机探测绕开代理：容器设了 http_proxy 且 no_proxy 不含 127.0.0.1 时，
+# 裸 curl 会绕道 mihomo 自身再去探 127.0.0.1:9090，误判不健康（与 init.sh 同款）
+curl_local() {
+    env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY \
+        curl "$@"
+}
+
 if [ -f "${CONFIG_DIR}/.secret" ]; then
     SECRET=$(tr -d '[:space:]' < "${CONFIG_DIR}/.secret" 2>/dev/null)
 fi
 
 if [ -n "${SECRET}" ]; then
-    curl -fsS --max-time 5 -H "Authorization: Bearer ${SECRET}" \
+    curl_local -fsS --max-time 5 -H "Authorization: Bearer ${SECRET}" \
         "http://127.0.0.1:9090/version" > /dev/null
 else
-    curl -fsS --max-time 5 "http://127.0.0.1:9090/version" > /dev/null
+    curl_local -fsS --max-time 5 "http://127.0.0.1:9090/version" > /dev/null
 fi

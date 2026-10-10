@@ -85,6 +85,22 @@ read_body() {
     fi
 }
 
+# sub_urls.txt 读改写锁：并发 CGI 请求串行化，避免后写者覆盖丢更新
+# busybox flock 支持 fd 加锁，锁持有到进程退出；busybox flock 没有 -w 超时参数
+# （实测 1.36/1.37 均无），改用 -n 非阻塞 + 100ms 轮询重试，最多等 5 秒，抢不到按失败处理
+URLS_LOCK="/tmp/mihomo_urls.lock"
+urls_lock() {
+    command -v flock >/dev/null 2>&1 || return 0
+    exec 9>"${URLS_LOCK}"
+    lock_wait=0
+    while ! flock -n 9; do
+        lock_wait=$((lock_wait + 1))
+        [ "${lock_wait}" -ge 50 ] && return 1
+        sleep 0.1
+    done
+    return 0
+}
+
 # 获取 action 参数
 action=$(echo "${QUERY_STRING}" | sed -n 's/.*action=\([^&]*\).*/\1/p')
 if [ -z "${action}" ]; then
@@ -92,6 +108,13 @@ if [ -z "${action}" ]; then
 fi
 
 json_header
+
+# CSRF 防护：写操作要求携带 X-Requested-With 自定义头（HTML 表单无法设置自定义头，
+# 跨站 fetch 带自定义头会触发 CORS 预检而被拦；官方页面由 api() 统一携带）
+if [ "${REQUEST_METHOD}" = "POST" ] && [ -z "${HTTP_X_REQUESTED_WITH}" ]; then
+    printf '{"error":"非法请求"}\n'
+    exit 0
+fi
 
 case "${action}" in
     # ---------------------------
@@ -133,6 +156,12 @@ case "${action}" in
         url=$(printf "%b" "${url}")
         alias=$(echo "${body}" | sed -n 's/.*alias=\([^&]*\).*/\1/p' | sed 's/+/ /g;s/%/\\x/g')
         alias=$(printf "%b" "${alias}" 2>/dev/null | tr -d '\000-\010\013\014\016-\037\177\t\r\n')
+        # 别名长度后端限制（前端 maxlength 只是装饰）。用 wc -c 按字节计：
+        # busybox ash 的 ${#var} 在 unicode 构建下按字符数，中文别名会绕过字节上限
+        if [ "$(printf '%s' "${alias}" | wc -c)" -gt 128 ]; then
+            printf '{"error":"别名过长(上限 128 字节)"}\n'
+            exit 0
+        fi
         if [ -z "${url}" ]; then
             printf '{"error":"URL 不能为空"}\n'
             exit 0
@@ -152,6 +181,11 @@ case "${action}" in
                 exit 0
                 ;;
         esac
+        # 检查重复前先拿锁：读文件与追加之间不能被其他请求插入
+        if ! urls_lock; then
+            printf '{"error":"操作冲突,请稍后重试"}\n'
+            exit 0
+        fi
         # 检查重复（按 URL 部分比对，兼容老格式）
         if [ -f "${SUB_URLS_FILE}" ]; then
             while IFS= read -r ex || [ -n "${ex}" ]; do
@@ -180,15 +214,34 @@ case "${action}" in
             printf '{"error":"URL 不能为空"}\n'
             exit 0
         fi
+        if ! urls_lock; then
+            printf '{"error":"操作冲突,请稍后重试"}\n'
+            exit 0
+        fi
         if [ -f "${SUB_URLS_FILE}" ]; then
             tmpf="${SUB_URLS_FILE}.tmp"
+            del_urls=""
+            del_any=0
             : > "${tmpf}"
             while IFS= read -r ex || [ -n "${ex}" ]; do
                 if [ "$(url_part "${ex}")" != "${url}" ]; then
                     printf '%s\n' "${ex}" >> "${tmpf}"
+                else
+                    # 收集被删除行的 URL（URL 无空白字符，可空格拼接后遍历）
+                    del_urls="${del_urls:+${del_urls} }${url}"
+                    del_any=1
                 fi
             done < "${SUB_URLS_FILE}"
             mv "${tmpf}" "${SUB_URLS_FILE}"
+            # 清理对应的 usage 流量存档（ukey 算法与 sub.sh 写入时一致）
+            if [ "${del_any}" -eq 1 ]; then
+                set -f
+                for durl in ${del_urls}; do
+                    ukey=$(printf '%s' "${durl}" | md5sum 2>/dev/null | cut -c1-12)
+                    [ -n "${ukey}" ] && rm -f "${CONFIG_DIR}/usage/${ukey}.dat"
+                done
+                set +f
+            fi
         fi
         printf '{"success":true,"message":"订阅已删除"}\n'
         ;;
@@ -202,8 +255,18 @@ case "${action}" in
         url=$(printf "%b" "${url}")
         alias=$(echo "${body}" | sed -n 's/.*alias=\([^&]*\).*/\1/p' | sed 's/+/ /g;s/%/\\x/g')
         alias=$(printf "%b" "${alias}" 2>/dev/null | tr -d '\000-\010\013\014\016-\037\177\t\r\n')
+        # 别名长度后端限制（前端 maxlength 只是装饰）。用 wc -c 按字节计：
+        # busybox ash 的 ${#var} 在 unicode 构建下按字符数，中文别名会绕过字节上限
+        if [ "$(printf '%s' "${alias}" | wc -c)" -gt 128 ]; then
+            printf '{"error":"别名过长(上限 128 字节)"}\n'
+            exit 0
+        fi
         if [ -z "${url}" ]; then
             printf '{"error":"URL 不能为空"}\n'
+            exit 0
+        fi
+        if ! urls_lock; then
+            printf '{"error":"操作冲突,请稍后重试"}\n'
             exit 0
         fi
         if [ -f "${SUB_URLS_FILE}" ]; then
@@ -239,6 +302,10 @@ case "${action}" in
             printf '{"error":"URL 不能为空"}\n'
             exit 0
         fi
+        if ! urls_lock; then
+            printf '{"error":"操作冲突,请稍后重试"}\n'
+            exit 0
+        fi
         if [ -f "${SUB_URLS_FILE}" ]; then
             tmpf="${SUB_URLS_FILE}.tmp"
             : > "${tmpf}"
@@ -265,7 +332,27 @@ case "${action}" in
             printf '{"error":"URL 不能为空"}\n'
             exit 0
         fi
+        if ! urls_lock; then
+            printf '{"error":"操作冲突,请稍后重试"}\n'
+            exit 0
+        fi
+        # 改写文件前先做只读存在性检查：URL 不在列表里直接报错退出，绝不碰文件
+        # （否则会先把全部订阅写成 off，然后才发现"订阅不存在"）
         found=0
+        if [ -f "${SUB_URLS_FILE}" ]; then
+            while IFS= read -r ex || [ -n "${ex}" ]; do
+                [ -z "${ex}" ] && continue
+                is_comment "${ex}" && continue
+                if [ "$(url_part "${ex}")" = "${url}" ]; then
+                    found=1
+                    break
+                fi
+            done < "${SUB_URLS_FILE}"
+        fi
+        if [ "${found}" -eq 0 ]; then
+            printf '{"error":"订阅不存在"}\n'
+            exit 0
+        fi
         if [ -f "${SUB_URLS_FILE}" ]; then
             tmpf="${SUB_URLS_FILE}.tmp"
             : > "${tmpf}"
@@ -277,7 +364,6 @@ case "${action}" in
                 fi
                 eurl=$(url_part "${ex}")
                 if [ "${eurl}" = "${url}" ]; then
-                    found=1
                     emit_line "$(alias_part "${ex}")" "${eurl}" "on" >> "${tmpf}"
                 else
                     emit_line "$(alias_part "${ex}")" "${eurl}" "off" >> "${tmpf}"
@@ -285,11 +371,7 @@ case "${action}" in
             done < "${SUB_URLS_FILE}"
             mv "${tmpf}" "${SUB_URLS_FILE}"
         fi
-        if [ "${found}" -eq 0 ]; then
-            printf '{"error":"订阅不存在"}\n'
-        else
-            printf '{"success":true,"message":"已切换，仅启用该订阅"}\n'
-        fi
+        printf '{"success":true,"message":"已切换，仅启用该订阅"}\n'
         ;;
 
     # ---------------------------

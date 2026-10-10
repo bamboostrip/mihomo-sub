@@ -380,7 +380,8 @@ async function api(action, method, body) {
     let opts = { method: method || 'GET' };
     if (body) {
         opts.method = 'POST';
-        opts.headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+        // X-Requested-With: 后端 CSRF 校验要求写操作必须携带的自定义头
+        opts.headers = { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' };
         opts.body = body;
     }
     try {
@@ -536,7 +537,7 @@ async function toggleSub(url, enabled) {
 async function soloSub(url) {
     let r = await api('solo', 'POST', 'url=' + encodeURIComponent(url));
     if (r.error) { toast(r.error, false); return; }
-    await api('refresh');
+    await api('refresh', 'POST', 'r=1');
     toast('已切换，正在刷新…', true);
     loadSubs();
     pollRefresh(30);
@@ -568,7 +569,7 @@ async function doRefresh() {
     icon.classList.add('spin');
     btn.querySelector('.btn-text').textContent = ' 刷新中...';
 
-    let r = await api('refresh');
+    let r = await api('refresh', 'POST', 'r=1');
     if (r.error) {
         toast(r.error, false);
         btn.disabled = false;
@@ -659,7 +660,7 @@ async function setGroupMode(val) {
         el.classList.toggle('active', el.dataset.val === val);
     });
     updateGroupModeHint(val);
-    await api('refresh');
+    await api('refresh', 'POST', 'r=1');
     toast('模式已切换，正在刷新…', true);
     pollRefresh(30);
 }
@@ -691,7 +692,7 @@ async function setTunMode(val) {
     document.querySelectorAll('#tunModeOpts .schedule-opt').forEach(el => {
         el.classList.toggle('active', el.dataset.val === val);
     });
-    await api('refresh');
+    await api('refresh', 'POST', 'r=1');
     toast('TUN 已' + (val === 'on' ? '开启' : '关闭') + '，正在刷新…', true);
     setTimeout(loadTunMode, 1500);
     pollRefresh(30);
@@ -699,13 +700,19 @@ async function setTunMode(val) {
 
 // 触发后台刷新后轮询日志/状态，让用户看到刷新进度（最多 seconds 秒）
 function pollRefresh(seconds) {
+    // 防叠加：切换/改模式/TUN 连点会启动多个 interval 叠加轮询，先清掉旧轮询
+    if (window._pollTimer) clearInterval(window._pollTimer);
     let n = 0;
     let t = setInterval(async () => {
         n++;
         await loadLogs();
         await loadStatus();
-        if (n >= seconds) clearInterval(t);
+        if (n >= seconds) {
+            clearInterval(t);
+            if (window._pollTimer === t) window._pollTimer = null;
+        }
     }, 1000);
+    window._pollTimer = t;
 }
 
 // 回车添加订阅

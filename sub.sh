@@ -15,6 +15,8 @@ GROUP_MODE_FILE="${CONFIG_DIR}/group_mode.conf"
 LAST_RUN_FILE="${CONFIG_DIR}/last_run"
 UA_FILE="${CONFIG_DIR}/user_agent.txt"
 TEMP_DIR="/tmp/mihomo_sub"
+# 并发锁文件：cron/手动/管理页切换等多个入口可能同时触发本脚本
+LOCK_FILE="/tmp/mihomo_sub.lock"
 
 CR=$(printf '\r')
 TAB=$(printf '\t')
@@ -126,6 +128,8 @@ hum() {
 sub_end() {
     exit_code="${1:-0}"
     log="${log}\n"
+    # 注意：不能对 log 做 % -> %% 转义——%b 只解释参数里的反斜杠转义（\n 等），
+    # 参数中的 % 本来就是字面输出（busybox/dash 实测），转义反而会把 "100%" 写成 "100%%"
     printf "%b" "${log}" >> "${LOG_FILE}"
     # 日志超过 1MB 时只保留最后 50KB
     if [ -f "${LOG_FILE}" ]; then
@@ -382,6 +386,19 @@ apply_alias_prefix() {
 # ---------------------------
 # 日志输出辅助
 # ---------------------------
+
+# 并发锁：避免 cron/手动/切换触发的多个实例同时写配置与 good 文件
+# 抢不到锁说明已有实例在跑，直接让路。
+# 注意：这里不能用 sub_end 退出——它会 rm -rf TEMP_DIR，
+# 会把正在运行的另一个实例的临时文件删掉，必须裸 exit
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"${LOCK_FILE}"
+    if ! flock -n 9; then
+        printf '[%s] 已有刷新正在进行,本次跳过\n' "$(date +"%Y-%m-%d %H:%M:%S %z")" >> "${LOG_FILE}"
+        exit 0
+    fi
+fi
+
 check_schedule
 
 # 清除 subconverter 缓存
@@ -523,6 +540,14 @@ while IFS= read -r line || [ -n "${line}" ]; do
     # 后续提取/重命名/去重全部基于规范文本
     normalize_yaml "${temp_file}"
 
+    # 检测 rule-providers / proxy-providers：本项目只合并 proxies/proxy-groups/rules 三段，
+    # 这类订阅（RULE-SET / use: 引用 provider）拼出的配置必然被 mihomo 拒绝，明确跳过
+    if grep -qE '^[[:space:]]*(rule-providers|proxy-providers):' "${temp_file}" 2>/dev/null; then
+        log="${log}Error: 订阅 ${sub_count}${log_tag} 使用 rule-providers/proxy-providers（RULE-SET 或 use:），暂不支持合并，已跳过\n\t"
+        say "⚠️ 订阅 ${sub_count}${log_tag} 使用 provider（RULE-SET/use:），已跳过"
+        continue
+    fi
+
     # 有别名则加前缀（merge 只改节点名；isolate 连策略组名/引用一起改）
     if [ -n "${SUB_ALIAS}" ]; then
         apply_alias_prefix "${temp_file}" "${SUB_ALIAS}" "${GROUP_MODE}"
@@ -622,6 +647,7 @@ if [ -n "${all_groups}" ]; then
                 sub(/^[ \t]{0,2}- name: /, "", k)
                 gsub(/^["]|["]$/, "", k)
                 gsub(/^[ \t]+|[ \t]+$/, "", k)
+                inprox=0
                 if (k in seen) { dup=1; cur=k; next }
                 seen[k]=1; dup=0; cur=k
                 n++; order[n]=k; gi[k]=n; cnt[n]=0
@@ -630,8 +656,12 @@ if [ -n "${all_groups}" ]; then
             }
             if (cur == "") { print; next }
             if (dup) {
-                # 同名组：只收集成员行（6 格缩进序列项），稍后并入首个同名组
-                if ($0 ~ /^[ \t]{4,}- /) {
+                # 同名组：只收集真正的组成员——必须位于本组 proxies: 键之后、
+                # 下一个同级键之前的序列项。use: 等其他列表的项（provider 名）
+                # 不是成员，混进 proxies 会引用不存在的策略导致 mihomo 400
+                if ($0 ~ /^[ \t]*[A-Za-z][A-Za-z0-9_-]*:/) {
+                    inprox = ($0 ~ /^[ \t]*proxies:[ \t]*$/) ? 1 : 0
+                } else if (inprox && $0 ~ /^[ \t]{4,}- /) {
                     v=$0
                     sub(/^[ \t]*-[ \t]+/, "", v)
                     gsub(/^[ \t]+|[ \t]+$/, "", v)
@@ -645,9 +675,13 @@ if [ -n "${all_groups}" ]; then
         END {
             for (i = 1; i <= n; i++) {
                 k=order[i]
-                # 首个同名组已有的成员值（新成员先和它去重）
+                # 首个同名组已有的成员值（新成员先和它去重）。
+                # 同样只认 proxies: 列表之内的项，避免 use: 等列表项被当成已有成员
+                inprox=0
                 for (j = 1; j <= cnt[i]; j++) {
-                    if (L[i,j] ~ /^[ \t]{4,}- /) {
+                    if (L[i,j] ~ /^[ \t]*[A-Za-z][A-Za-z0-9_-]*:/) {
+                        inprox = (L[i,j] ~ /^[ \t]*proxies:[ \t]*$/) ? 1 : 0
+                    } else if (inprox && L[i,j] ~ /^[ \t]{4,}- /) {
                         v=L[i,j]
                         sub(/^[ \t]*-[ \t]+/, "", v)
                         gsub(/^[ \t]+|[ \t]+$/, "", v)
@@ -661,10 +695,14 @@ if [ -n "${all_groups}" ]; then
                     newm[i,v]=1
                     neword[++ne]=v
                 }
-                # 插入点：首个组的最后一条成员行；没有成员行则找 proxies: 行
-                sp=0; pp=0
+                # 插入点：首个组的最后一条成员行；没有成员行则找 proxies: 行。
+                # sp 同样只认 proxies: 列表内的成员行，否则会把 use: 末尾当插入点，
+                # 新成员被插到别的列表里去
+                sp=0; pp=0; inprox=0
                 for (j = 1; j <= cnt[i]; j++) {
-                    if (L[i,j] ~ /^[ \t]{4,}- /) sp=j
+                    if (L[i,j] ~ /^[ \t]*[A-Za-z][A-Za-z0-9_-]*:/) {
+                        inprox = (L[i,j] ~ /^[ \t]*proxies:[ \t]*$/) ? 1 : 0
+                    } else if (inprox && L[i,j] ~ /^[ \t]{4,}- /) sp=j
                     if (L[i,j] ~ /^[ \t]*proxies:[ \t]*$/) pp=j
                 }
                 for (j = 1; j <= cnt[i]; j++) {
@@ -774,6 +812,22 @@ fi
 # secret 由脚本强制写入，不允许 overlay 覆盖
 if command -v yq > /dev/null 2>&1; then
     yq -i ".secret = \"${SECRET_ESC}\"" "${CONFIG_FILE}.new" 2>/dev/null || true
+fi
+
+# 落盘前用 mihomo -t 校验：坏配置（引用不存在的策略/规则集等）不再进 config.yaml。
+# 否则首次运行没有 good 文件可回滚，坏配置留在原地，容器下次重启直接起不来（重启死循环）
+if command -v timeout >/dev/null 2>&1; then MT="timeout 30"; else MT=""; fi
+t_err=$(${MT} /mihomo -t -d "${CONFIG_DIR}" -f "${CONFIG_FILE}.new" 2>&1)
+t_rc=$?
+if [ "${t_rc}" -ne 0 ]; then
+    t_msg=$(printf '%s' "${t_err}" | grep -iE 'error|fail' | tail -1)
+    [ -n "${t_msg}" ] || t_msg="exit ${t_rc}"
+    log="${log}Error: 生成的配置未通过 mihomo 校验（${t_msg}），已保留现有配置\n\t"
+    say "❌ 配置校验失败：${t_msg}"
+    cp -f "${CONFIG_FILE}.new" "${CONFIG_FILE}.bad"
+    log="${log}失败配置已另存为 config.yaml.bad 供排查\n\t"
+    restore_good_config
+    sub_end 1
 fi
 
 mv "${CONFIG_FILE}.new" "${CONFIG_FILE}"

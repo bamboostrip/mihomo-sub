@@ -89,16 +89,20 @@ fi
 # SECRET 同步进 config.yaml：存在则替换、没有则追加（sub.sh 每次刷新同样会强制写入）。
 # 不能只在“缺少时才追加”：改密钥/去掉密钥后，配置里的旧 secret 与新值不一致，
 # 启动探测会一直 401/403 → 容器重启循环；而 sub.sh 要等探测通过才会运行，无法自愈。
-SECRET_ESC=$(printf '%s' "${SECRET}" | sed 's/\\/\\\\/g; s/"/\\"/g')
-if grep -qE '^secret:' "${CONFIG_DIR}/config.yaml" 2>/dev/null; then
-    SECRET_ESC="${SECRET_ESC}" awk '
-        /^secret:/ { print "secret: \"" ENVIRON["SECRET_ESC"] "\""; next }
-        { print }
-    ' "${CONFIG_DIR}/config.yaml" > "${CONFIG_DIR}/config.yaml.tmp" && \
-        mv "${CONFIG_DIR}/config.yaml.tmp" "${CONFIG_DIR}/config.yaml"
-else
-    printf 'secret: "%s"\n' "${SECRET_ESC}" >> "${CONFIG_DIR}/config.yaml"
-fi
+# 收敛成函数：下面启动前校验失败回退后，要对新配置重跑一遍，保证鉴权行为一致
+sync_secret() {
+    SECRET_ESC=$(printf '%s' "${SECRET}" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    if grep -qE '^secret:' "${CONFIG_DIR}/config.yaml" 2>/dev/null; then
+        SECRET_ESC="${SECRET_ESC}" awk '
+            /^secret:/ { print "secret: \"" ENVIRON["SECRET_ESC"] "\""; next }
+            { print }
+        ' "${CONFIG_DIR}/config.yaml" > "${CONFIG_DIR}/config.yaml.tmp" && \
+            mv "${CONFIG_DIR}/config.yaml.tmp" "${CONFIG_DIR}/config.yaml"
+    else
+        printf 'secret: "%s"\n' "${SECRET_ESC}" >> "${CONFIG_DIR}/config.yaml"
+    fi
+}
+sync_secret
 
 if [ ! -d "${CONFIG_DIR}/ui" ] || [ -z "$(ls -A "${CONFIG_DIR}/ui" 2>/dev/null)" ]; then
     mkdir -p "${CONFIG_DIR}/ui"
@@ -142,6 +146,28 @@ fi
 # ---------------------------
 # 启动 mihomo 核心
 # ---------------------------
+# 启动前先校验数据卷里的 config.yaml：坏配置（如上次断电留下的半成品）会让核心
+# 起不来 → 探测 10 次失败 → exit 1 → docker 无限重启（重启死循环，
+# 此时 sub.sh 永远没机会运行自愈）。校验失败先备份坏文件供排查，
+# 再回退：good 优先，否则用内置初始配置；回退后的新文件重跑 secret 同步
+if command -v timeout >/dev/null 2>&1; then MT="timeout 30"; else MT=""; fi
+t_err=$(${MT} /mihomo -t -d "${CONFIG_DIR}" -f "${CONFIG_DIR}/config.yaml" 2>&1)
+t_rc=$?
+if [ "${t_rc}" -ne 0 ]; then
+    t_msg=$(printf '%s' "${t_err}" | grep -iE 'error|fail' | tail -1)
+    [ -n "${t_msg}" ] || t_msg="exit ${t_rc}"
+    echo "❌ config.yaml 未通过 mihomo 校验（${t_msg}），已备份为 config.yaml.bad 并回退"
+    cp -f "${CONFIG_DIR}/config.yaml" "${CONFIG_DIR}/config.yaml.bad"
+    if [ -f "${CONFIG_DIR}/config.yaml.good" ]; then
+        cp -f "${CONFIG_DIR}/config.yaml.good" "${CONFIG_DIR}/config.yaml"
+        echo "↩️ 已回退到上一份可用配置（config.yaml.good）"
+    else
+        cp "${INIT_DIR}/config.yaml" "${CONFIG_DIR}/config.yaml"
+        echo "↩️ 没有 good 备份，已回退到内置初始配置"
+    fi
+    sync_secret
+fi
+
 echo "🚀 启动 mihomo..."
 /mihomo &
 sleep 2

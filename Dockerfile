@@ -41,6 +41,11 @@ RUN case "${TARGETARCH}${TARGETVARIANT}" in \
     tar -xzf /tmp/subconverter.tar.gz -C / && \
     rm -rf /tmp/subconverter.tar.gz
 
+# subconverter 仅本机使用，改监听 127.0.0.1（host 网络下 0.0.0.0 等于局域网开放的
+# 免鉴权抓取服务）。已实测它会读取可执行文件同目录的 pref.ini，
+# init.sh 从任意工作目录启动均生效
+RUN printf '[common]\nlisten=127.0.0.1\nport=25500\n' > /subconverter/pref.ini
+
 # 初始 mihomo 配置（存到初始化目录，运行时由 init.sh 复制）
 RUN echo 'mixed-port: 7890' > /usr/share/mihomo-init/config.yaml && \
     echo 'external-ui: /root/.config/mihomo/ui' >> /usr/share/mihomo-init/config.yaml && \

@@ -84,7 +84,7 @@ case "${action}" in
         url=$(echo "${body}" | sed -n 's/.*url=\([^&]*\).*/\1/p' | sed 's/+/ /g;s/%/\\x/g')
         url=$(printf "%b" "${url}")
         alias=$(echo "${body}" | sed -n 's/.*alias=\([^&]*\).*/\1/p' | sed 's/+/ /g;s/%/\\x/g')
-        alias=$(printf "%b" "${alias}" 2>/dev/null | tr -d '\t\r\n')
+        alias=$(printf "%b" "${alias}" 2>/dev/null | tr -d '\000-\010\013\014\016-\037\177\t\r\n')
         if [ -z "${url}" ]; then
             printf '{"error":"URL 不能为空"}\n'
             exit 0
@@ -153,7 +153,7 @@ case "${action}" in
         url=$(echo "${body}" | sed -n 's/.*url=\([^&]*\).*/\1/p' | sed 's/+/ /g;s/%/\\x/g')
         url=$(printf "%b" "${url}")
         alias=$(echo "${body}" | sed -n 's/.*alias=\([^&]*\).*/\1/p' | sed 's/+/ /g;s/%/\\x/g')
-        alias=$(printf "%b" "${alias}" 2>/dev/null | tr -d '\t\r\n')
+        alias=$(printf "%b" "${alias}" 2>/dev/null | tr -d '\000-\010\013\014\016-\037\177\t\r\n')
         if [ -z "${url}" ]; then
             printf '{"error":"URL 不能为空"}\n'
             exit 0

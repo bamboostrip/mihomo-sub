@@ -193,11 +193,99 @@ apply_alias_prefix() {
     prefix="$2"
     tmp_renamed="${file}.renamed"
     awk -v pre="${prefix}" '
-        function esc_pre(s,   t) { t=s; gsub(/\\/, "\\\\", t); gsub(/["]/, "\\\"", t); return t }
-        function esc_old(s,   t) { t=s; gsub(/\\"/, "\"", t); gsub(/["]/, "\\\"", t); return t }
-        function norm(v,   k) { k=v; gsub(/^["]|["]$/, "", k); gsub(/^ +| +$/, "", k); return k }
+        function hexval(h,   n,i,c,d) {
+            n = 0
+            for (i = 1; i <= length(h); i++) {
+                c = tolower(substr(h, i, 1))
+                d = index("0123456789abcdef", c) - 1
+                if (d < 0) return -1
+                n = n * 16 + d
+            }
+            return n
+        }
+        function utf8(cp) {
+            if (cp < 0) return ""
+            if (cp < 128) return sprintf("%c", cp)
+            if (cp < 2048) return sprintf("%c%c", 192 + int(cp/64), 128 + (cp % 64))
+            if (cp < 65536) return sprintf("%c%c%c", 224 + int(cp/4096), 128 + (int(cp/64) % 64), 128 + (cp % 64))
+            return sprintf("%c%c%c%c", 240 + int(cp/262144), 128 + (int(cp/4096) % 64), 128 + (int(cp/64) % 64), 128 + (cp % 64))
+        }
+        function yqdec(s,   out,i,c,e,hex,cp,lo) {
+            out = ""
+            i = 1
+            while (i <= length(s)) {
+                c = substr(s, i, 1)
+                if (c == "\\") {
+                    e = substr(s, i+1, 1)
+                    if (e == "n") { out = out "\n"; i += 2 }
+                    else if (e == "t") { out = out "\t"; i += 2 }
+                    else if (e == "r") { out = out "\r"; i += 2 }
+                    else if (e == "a") { out = out "\a"; i += 2 }
+                    else if (e == "b") { out = out "\b"; i += 2 }
+                    else if (e == "v") { out = out "\v"; i += 2 }
+                    else if (e == "f") { out = out "\f"; i += 2 }
+                    else if (e == "e") { out = out "\033"; i += 2 }
+                    else if (e == "U") {
+                        cp = hexval(substr(s, i+2, 8))
+                        if (cp < 0) { out = out c; i++ }
+                        else { out = out utf8(cp); i += 10 }
+                    }
+                    else if (e == "u") {
+                        cp = hexval(substr(s, i+2, 4))
+                        if (cp < 0) { out = out c; i++ }
+                        else {
+                            lo = 0
+                            if (cp >= 55296 && cp <= 56319 && substr(s, i+6, 2) == "\\u") {
+                                lo = hexval(substr(s, i+8, 4))
+                            }
+                            if (lo >= 56320 && lo <= 57343) {
+                                out = out utf8(65536 + (cp - 55296) * 1024 + (lo - 56320))
+                                i += 12
+                            } else { out = out utf8(cp); i += 6 }
+                        }
+                    }
+                    else if (e == "x") {
+                        cp = hexval(substr(s, i+2, 2))
+                        if (cp < 0) { out = out c; i++ }
+                        else { out = out utf8(cp); i += 4 }
+                    }
+                    else { out = out e; i += 2 }
+                } else { out = out c; i++ }
+            }
+            return out
+        }
+        function esc(s,   t) {
+            t = s
+            gsub(/\\/, "\\\\", t)
+            gsub(/["]/, "\\\"", t)
+            gsub(/\n/, "\\n", t)
+            gsub(/\t/, "\\t", t)
+            gsub(/\r/, "\\r", t)
+            return t
+        }
+        function norm(v,   k,q,o,rest,p) {
+            k = v
+            gsub(/^[ \t\r]+|[ \t\r]+$/, "", k)
+            q = substr(k, 1, 1)
+            if (length(k) >= 2 && (q == "\"" || q == SQ) && substr(k, length(k), 1) == q) {
+                k = substr(k, 2, length(k) - 2)
+                if (q == "\"") k = yqdec(k)
+                else {
+                    o = ""
+                    rest = k
+                    while ((p = index(rest, SQ SQ)) > 0) {
+                        o = o substr(rest, 1, p - 1) SQ
+                        rest = substr(rest, p + 2)
+                    }
+                    k = o rest
+                }
+            }
+            gsub(/^[ \t\r]+|[ \t\r]+$/, "", k)
+            return k
+        }
         function is_top(key) { return (key ~ /^[A-Za-z][A-Za-z0-9_-]*:[ \t]*$/) }
         function entry_ind(s,   t) { t=s; sub(/- name:.*$/, "", t); return t }
+        BEGIN { SQ = sprintf("%c", 39); SQSQ = SQ SQ }
         NR==FNR {
             if ($0 ~ /^proxies:[ \t]*$/) { sec="proxies"; next }
             if ($0 ~ /^proxy-groups:[ \t]*$/) { sec="groups"; next }
@@ -218,27 +306,40 @@ apply_alias_prefix() {
             ind=entry_ind($0)
             v=$0; sub(/^[ \t]{0,2}- name: /, "", v)
             k=norm(v)
-            printf "%s- name: \"%s | %s\"\n", ind, esc_pre(pre), esc_old(k)
+            printf "%s- name: \"%s | %s\"\n", ind, esc(pre), esc(k)
             next
         }
         sec=="groups" && /^[ \t]*- / {
             ind=$0; sub(/-.*$/, "- ", ind)
             ref=$0; sub(/^[ \t]*- +/, "", ref)
             k=norm(ref)
-            if (k in mp) printf "%s\"%s | %s\"\n", ind, esc_pre(pre), esc_old(k)
+            if (k in mp) printf "%s\"%s | %s\"\n", ind, esc(pre), esc(k)
             else print
             next
         }
         sec=="rules" && /^[ \t]*- / {
-            n=split($0, f, ",")
+            # 整行解开外层引号后切分（规则整体被引号包裹时直接 split 会引号失衡），
+            # 各字段解码后比对，命中则整行按规范形式重建
+            ind=$0; sub(/[^ \t].*$/, "", ind)
+            rb=$0; sub(/^[ \t]*- +/, "", rb)
+            gsub(/^[ \t]+|[ \t]+$/, "", rb)
+            q=substr(rb, 1, 1)
+            if (length(rb) >= 2 && (q == "\"" || q == SQ) && substr(rb, length(rb), 1) == q) {
+                rb = substr(rb, 2, length(rb) - 2)
+                if (q == SQ) gsub(SQSQ, SQ, rb)
+            }
+            n=split(rb, f, ",")
             idx=n
-            key=f[n]; gsub(/^ +| +$/, "", key)
-            if (key=="no-resolve" && n>=3) { idx=n-1; key=f[idx]; gsub(/^ +| +$/, "", key) }
-            gsub(/^["]|["]$/, "", key)
-            if (key in mp) f[idx]="\"" esc_pre(pre) " | " esc_old(key) "\""
-            out=f[1]
-            for (i=2;i<=n;i++) out=out "," f[i]
-            print out
+            if (norm(f[n])=="no-resolve" && n>=3) idx=n-1
+            key=norm(f[idx])
+            if (key in mp) {
+                for (i=1;i<=n;i++) f[i]=esc(norm(f[i]))
+                f[idx]=esc(pre) " | " f[idx]
+                out=f[1]
+                for (i=2;i<=n;i++) out=out "," f[i]
+                print ind "- \"" out "\""
+            }
+            else print
             next
         }
         { print }
@@ -280,7 +381,7 @@ mkdir -p "${TEMP_DIR}"
 # ---------------------------
 all_proxies=""
 all_rules=""
-first_groups=""
+all_groups=""
 sub_count=0
 success_count=0
 
@@ -301,7 +402,7 @@ while IFS= read -r line || [ -n "${line}" ]; do
         SUB_ALIAS=""
         sub_url="${line}"
     else
-        SUB_ALIAS=$(printf '%s' "${_f1}" | tr -d '\r\n')
+        SUB_ALIAS=$(printf '%s' "${_f1}" | tr -d '\000-\010\013\014\016-\037\177\r\n')
         sub_url="${_f2}"
     fi
     if [ -z "${sub_url}" ]; then
@@ -396,9 +497,11 @@ while IFS= read -r line || [ -n "${line}" ]; do
 "
     fi
 
-    # 保留第一个订阅的 proxy-groups
-    if [ -z "${first_groups}" ]; then
-        first_groups=$(extract_section "${temp_file}" "proxy-groups")
+    # 合并所有订阅的 proxy-groups（同名保留首次出现，各自规则才有归属）
+    groups=$(extract_section "${temp_file}" "proxy-groups")
+    if [ -n "${groups}" ]; then
+        all_groups="${all_groups}${groups}
+"
     fi
 
     # 只有实际提取到代理或规则才算成功
@@ -449,6 +552,46 @@ if [ -n "${all_proxies}" ]; then
         log="${log}已去除 ${proxy_dedup} 个重名节点\n\t"
     fi
 fi
+
+# 多订阅策略组去重：同名策略组只保留第一次出现
+# （mihomo 要求 proxy-groups 内 name 唯一；被丢弃的同名组，
+# 其规则引用会落到保留的同名组上）
+if [ -n "${all_groups}" ]; then
+    groups_before=$(printf '%s' "${all_groups}" | grep -cE '^[ \t]{0,2}- name: ' || true)
+    all_groups=$(printf '%s' "${all_groups}" | awk '
+        /^[ \t]{0,2}- name: / {
+            nm=$0
+            sub(/^[ \t]{0,2}- name: /, "", nm)
+            gsub(/^["]|["]$/, "", nm)
+            gsub(/^ +| +$/, "", nm)
+            if (nm in seen) { skip=1; next }
+            seen[nm]=1; skip=0; print; next
+        }
+        skip { next }
+        { print }
+    ')
+    groups_after=$(printf '%s' "${all_groups}" | grep -cE '^[ \t]{0,2}- name: ' || true)
+    # $() 会剥掉末尾换行，补回来
+    all_groups="${all_groups}
+"
+    groups_dedup=$((groups_before - groups_after))
+    if [ "${groups_dedup}" -gt 0 ]; then
+        log="${log}已去除 ${groups_dedup} 个重名策略组\n\t"
+    fi
+fi
+
+# 规则完全相同的行去重（多订阅常带同样的直连/广告规则）
+if [ -n "${all_rules}" ]; then
+    rules_before=$(printf '%s' "${all_rules}" | grep -c . || true)
+    all_rules=$(printf '%s' "${all_rules}" | awk '!seen[$0]++')
+    all_rules="${all_rules}
+"
+    rules_after=$(printf '%s' "${all_rules}" | grep -c . || true)
+    rules_dedup=$((rules_before - rules_after))
+    if [ "${rules_dedup}" -gt 0 ]; then
+        log="${log}已去除 ${rules_dedup} 条重复规则\n\t"
+    fi
+fi
 SECRET_ESC=$(yaml_escape "${SECRET}")
 {
     printf '%s\n' 'mixed-port: 7890'
@@ -461,9 +604,9 @@ SECRET_ESC=$(yaml_escape "${SECRET}")
         printf '%s' "${all_proxies}"
     fi
 
-    if [ -n "${first_groups}" ]; then
+    if [ -n "${all_groups}" ]; then
         printf '%s\n' 'proxy-groups:'
-        printf '%s' "${first_groups}"
+        printf '%s' "${all_groups}"
         echo
     else
         printf '%s\n' 'proxy-groups:'

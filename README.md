@@ -47,7 +47,10 @@
 |------|------|
 | `7890` | 代理 mixed 端口 |
 | `9090` | mihomo API + Web 面板 (`/ui`) |
-| `9091` | 订阅管理页面 |
+| `9091` | 订阅管理页面（可用 `MGMT_PORT` 改端口） |
+
+> `network_mode: host` 下 Docker 的 `-p` 映射不生效：改管理页面端口用 `MGMT_PORT=18091`；
+> bridge 模式则直接 `-p 18091:9091` 即可。
 
 ## 部署
 
@@ -65,6 +68,9 @@ services:
       - TZ=Asia/Shanghai
       # 可选：设置后面板与 API 需要鉴权，不设置则无密码（仅建议局域网）
       # - SECRET=change-me
+      # 可选：管理页面(:9091)密码 + 端口（host 网络下改端口只能用 MGMT_PORT）
+      # - MGR_PASSWORD=change-me
+      # - MGMT_PORT=9091
     ports:
       - "7890:7890"
       - "9090:9090"
@@ -111,6 +117,9 @@ docker run -d \
 | `TZ` | 推荐 | 时区，如 `Asia/Shanghai` |
 | `sub_url` | 否 | 初始订阅 URL（首次启动时写入 `sub_urls.txt`，之后通过管理页面管理） |
 | `SECRET` | 否 | 面板与 API 密钥；为空则无密码（默认），`off` 可显式关闭；设置后 metacubexd 面板需填入同一密钥 |
+| `MGR_PASSWORD` | 否 | 管理页面（`:9091`）与 CGI 的 Basic 鉴权密码；为空则无密码（默认），`off` 可显式关闭 |
+| `MGR_USER` | 否 | 管理页面用户名（默认 `admin`） |
+| `MGMT_PORT` | 否 | 管理页面端口（默认 `9091`；`network_mode: host` 下改端口只能用它） |
 
 ## 使用
 
@@ -192,9 +201,18 @@ docker exec mihomo-sub /etc/periodic/15min/sub.sh --now
 
 **Q: 设置 SECRET 后面板要密码，管理页面（:9091）呢？**
 
-管理页面不需要密码，只有 `:9090` 的 metacubexd 面板和 API 需要。
-密钥持久化在数据卷的 `.secret` 文件里，重启容器不换密钥；去掉 `SECRET`
-环境变量也不会自动清除旧密钥，如需关闭请设 `SECRET=off` 后重启一次。
+设置 `MGR_PASSWORD` 后，管理页面的页面与所有 CGI 操作都会要求 Basic 鉴权（用户名默认 `admin`，可用 `MGR_USER` 改）；
+不设置则无密码（保持旧行为，仅建议局域网使用）。密码持久化在数据卷的 `.mgr_password`，重启不失效；
+如需关闭设 `MGR_PASSWORD=off` 后重启一次。`:9090` 的 metacubexd 面板与 API 由 `SECRET` 控制，二者互相独立。
+`SECRET` 同样持久化在数据卷的 `.secret`，去掉环境变量不会自动清除旧密钥，如需关闭设 `SECRET=off` 后重启一次。
+
+**Q: 想开 TUN 全局代理，overlay.yaml 是必须的吗？**
+
+不是必须。`overlay.yaml` 是可选的：没有这个文件，容器照样运行（普通 7890 端口代理模式）。
+如果需要 TUN，把 `tun` 段放进数据卷里的 `overlay.yaml`（`./mihomo-config/overlay.yaml`），
+每次刷新会深合并进去——直接改 `config.yaml` 不行，它会被订阅刷新重写。
+每台设备放一份即可（内容可复制）；`route-exclude-address` 里的 CIDR 必须是合法值（IPv4 最大 `/32`，
+写错如 `/33` 会导致重载被拒并回滚），且建议按该设备 `/etc/resolv.conf` 里的 DNS 服务器 IP 调整排除项。
 
 **Q: 刷新失败会把配置搞坏吗？**
 

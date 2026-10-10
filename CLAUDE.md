@@ -24,7 +24,7 @@ Docker 化的 mihomo（clash meta）代理方案，内置 Web 管理页面、多
 |------|------|------|
 | 7890 | mihomo mixed proxy | HTTP + SOCKS |
 | 9090 | mihomo API / metacubexd WebUI | `/ui` 代理面板 |
-| 9091 | busybox-extras httpd | 管理页面 + CGI API |
+| 9091 | busybox-extras httpd | 管理页面 + CGI API（`MGMT_PORT` 可改，`MGR_PASSWORD` 可加 Basic 鉴权） |
 
 ## 核心流程
 
@@ -35,7 +35,7 @@ Docker 化的 mihomo（clash meta）代理方案，内置 Web 管理页面、多
   → 启动 mihomo → 等待就绪（最多 10s，失败 exit 1）
   → 清缓存 + 启动 subconverter → 等待就绪（最多 10s，失败 exit 1）
   → sub.sh --now 首次订阅更新（同步阻塞）
-  → 启动 httpd :9091
+  → 启动 httpd :${MGMT_PORT:-9091}（设置 MGR_PASSWORD 则 Basic 鉴权）
   → exec crond -f（前台）
 ```
 
@@ -82,6 +82,8 @@ check_schedule（非 --now 时检查 last_run 时间戳）
 | `user_agent.txt` | 手动创建 | 自定义 UA，默认 `clash-verge/v2.5.1` |
 | `overlay.yaml` | 手动创建（可选） | 自定义覆盖层，不存在则跳过；受管字段不被覆盖 |
 | `.secret` | init.sh（SECRET 非空时） | API 密钥持久化；SECRET 为空则无此鉴权 |
+| `.mgr_password` | init.sh（MGR_PASSWORD 非空时） | 管理页面密码持久化；为空则页面无密码 |
+| `httpd.conf` | init.sh | busybox httpd 的 Basic 鉴权配置（密码哈希），仅在启用页面密码时生成 |
 | `geoip.metadb` | Dockerfile/init.sh | GeoIP 库，预下载避免启动时直连 GitHub |
 | `geosite.dat` | Dockerfile/init.sh | 规则集，预下载避免启动时直连 GitHub |
 | `config.yaml` | sub.sh | mihomo 代理配置，每次刷新重写（含 secret 行） |
@@ -109,6 +111,8 @@ check_schedule（非 --now 时检查 last_run 时间戳）
 
 ## 注意事项
 
+- **管理页面鉴权/端口** — `MGR_PASSWORD` 设置后 :9091 页面与 CGI 全部走 Basic 鉴权（密码哈希用 base busybox 的 `cryptpw -m md5` 生成，写入 `httpd.conf`）；`MGMT_PORT` 改监听端口（`network_mode: host` 下 `-p` 不生效，只能靠它）；两者留空 = 旧行为
+- **overlay.yaml 可选** — 不存在则跳过，纯 7890 代理模式照常；TUN 等自定义配置放这里，直接改 config.yaml 会在刷新时被重写；`route-exclude-address` 的 CIDR 必须合法（IPv4 最大 /32），否则重载被拒回滚
 - **合并方式** — `group_mode.conf` 为 `merge`（默认）时：别名只改节点名，同名策略组跨订阅并成员（含不同机场的同名通用组），规则整行去重；`isolate` 时策略组/规则按账号加前缀完全隔离。页面切换后需等刷新完成才生效
 - **subconverter 直连优先** — sub.sh 先 curl 直接下载并正确设置 UA，内容已是 Clash YAML 则跳过转换；只有非 Clash 格式才走 subconverter 兜底。全部请求绕开代理变量，防自环
 - **GeoIP/GeoSite 文件已预下载** — Dockerfile 构建时从 GitHub 下载，init.sh 复制到配置目录。避免启动时 mihomo 直连 GitHub 下载超时（国内环境常见问题）

@@ -44,6 +44,38 @@ else
 fi
 
 # ---------------------------
+# 管理页面密码（可选，Basic 鉴权；保护 :9091 页面与 CGI API）
+# MGR_PASSWORD 环境变量 > 数据卷持久化文件；留空 = 无密码（保持旧行为），off = 显式关闭
+# 用户名 MGR_USER（默认 admin）
+# ---------------------------
+MGR_USER=$(printf '%s' "${MGR_USER:-admin}" | tr -d ':\r\n')
+[ -n "${MGR_USER}" ] || MGR_USER=admin
+MGR_PASSWORD_FILE="${CONFIG_DIR}/.mgr_password"
+case "${MGR_PASSWORD}" in
+    off|OFF|none|NONE|false|FALSE|disable|DISABLE|disabled|DISABLED)
+        MGR_PASSWORD=""
+        : > "${MGR_PASSWORD_FILE}" 2>/dev/null || true
+        rm -f "${CONFIG_DIR}/httpd.conf" 2>/dev/null || true
+        ;;
+    "")
+        if [ -f "${MGR_PASSWORD_FILE}" ] && [ -s "${MGR_PASSWORD_FILE}" ]; then
+            MGR_PASSWORD=$(head -1 "${MGR_PASSWORD_FILE}" 2>/dev/null)
+        else
+            MGR_PASSWORD=""
+        fi
+        ;;
+    *)
+        printf '%s' "${MGR_PASSWORD}" > "${MGR_PASSWORD_FILE}"
+        chmod 600 "${MGR_PASSWORD_FILE}" 2>/dev/null || true
+        ;;
+esac
+if [ -n "${MGR_PASSWORD}" ]; then
+    echo "🔐 管理页面将启用密码（用户 ${MGR_USER}）"
+else
+    echo "🔓 管理页面无密码（仅建议局域网使用）"
+fi
+
+# ---------------------------
 # 配置文件初始化
 # ---------------------------
 mkdir -p "${CONFIG_DIR}"
@@ -173,9 +205,28 @@ echo "📡 执行首次订阅更新..."
 
 # ---------------------------
 # 启动管理页面 (busybox httpd)
+# 端口：MGMT_PORT（默认 9091；network_mode: host 下 -p 映射不生效，用这个改）
+# 密码：MGR_PASSWORD 设置后启用 Basic 鉴权（哈希用 base busybox 的 cryptpw 生成）
 # ---------------------------
-echo "🌐 启动管理页面 http://0.0.0.0:9091"
-busybox-extras httpd -h /usr/share/mihomo-mgr -p 9091
+MGMT_PORT="${MGMT_PORT:-9091}"
+case "${MGMT_PORT}" in
+    ''|*[!0-9]*) MGMT_PORT=9091 ;;
+esac
+HTTPD_ARGS=""
+if [ -n "${MGR_PASSWORD}" ]; then
+    MGR_HASH=$(cryptpw -m md5 "${MGR_PASSWORD}" 2>/dev/null)
+    if [ -n "${MGR_HASH}" ]; then
+        HTTPD_CONF="${CONFIG_DIR}/httpd.conf"
+        printf '/:%s:%s\n' "${MGR_USER}" "${MGR_HASH}" > "${HTTPD_CONF}"
+        chmod 600 "${HTTPD_CONF}" 2>/dev/null || true
+        HTTPD_ARGS="-c ${HTTPD_CONF}"
+        echo "🔐 管理页面鉴权已开启（用户 ${MGR_USER}）"
+    else
+        echo "⚠️ cryptpw 生成密码哈希失败，管理页面未启用密码"
+    fi
+fi
+echo "🌐 启动管理页面 http://0.0.0.0:${MGMT_PORT}"
+busybox-extras httpd -h /usr/share/mihomo-mgr -p "${MGMT_PORT}" ${HTTPD_ARGS}
 
 # ---------------------------
 # 启动 cron

@@ -121,5 +121,6 @@ check_schedule（非 --now 时检查 last_run 时间戳）
 - **subconverter 直连优先** — sub.sh 先 curl 直接下载并正确设置 UA，内容已是 Clash YAML 则跳过转换；只有非 Clash 格式才走 subconverter 兜底。全部请求绕开代理变量，防自环
 - **GeoIP/GeoSite 文件已预下载** — Dockerfile 构建时从 GitHub 下载，init.sh 复制到配置目录。避免启动时 mihomo 直连 GitHub 下载超时（国内环境常见问题）
 - **手动刷新会重置 `last_run`** — 点"立即刷新"后，下次定时刷新会被推迟一个完整周期
+- **切换后可见进度** — 订阅「切换」/ 合并方式 / TUN 开关触发刷新后，页面轮询日志与状态（最多 30 秒）展示刷新进度
 - **`printf '%s'` 不用 `%b`** — sub.sh 的 config 生成全部用 `%s`，防止订阅数据中的字面量 `\n` 被错误转义
 - **CHMOD 必须** — CGI 脚本必须有执行权限，Dockerfile 中已 `chmod +x`

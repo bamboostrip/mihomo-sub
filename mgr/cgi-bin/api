@@ -316,11 +316,26 @@ case "${action}" in
             val=$(head -1 "${TUN_MODE_FILE}" 2>/dev/null)
             case "${val}" in on) val="on" ;; *) val="off" ;; esac
             if tun_prereq; then preq=true; else preq=false; fi
+            locked=false
             note=""
-            if [ -f "${CONFIG_DIR}/overlay.yaml" ] && grep -qE '^[[:space:]]*tun:' "${CONFIG_DIR}/overlay.yaml" 2>/dev/null; then
-                note="overlay.yaml 里也有 tun 段，最终配置以 overlay 为准"
+            if [ -f "${CONFIG_DIR}/overlay.yaml" ]; then
+                oe=""
+                if command -v yq >/dev/null 2>&1; then
+                    oe=$(yq -r '.tun.enable' "${CONFIG_DIR}/overlay.yaml" 2>/dev/null | head -1)
+                fi
+                case "${oe}" in
+                    true|false)
+                        locked=true
+                        note="overlay.yaml 设置了 tun.enable=${oe}，页面开关不会生效（以 overlay 为准）"
+                        ;;
+                    *)
+                        if grep -qE '^[[:space:]]*tun:' "${CONFIG_DIR}/overlay.yaml" 2>/dev/null; then
+                            note="overlay.yaml 里也有 tun 段（未设置 enable），开关仍控制总开关"
+                        fi
+                        ;;
+                esac
             fi
-            printf '{"mode":"%s","prereq":%s,"note":"%s"}\n' "${val}" "${preq}" "${note}"
+            printf '{"mode":"%s","prereq":%s,"locked":%s,"note":"%s"}\n' "${val}" "${preq}" "${locked}" "${note}"
         fi
         ;;
 

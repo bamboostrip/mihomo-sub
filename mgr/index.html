@@ -243,6 +243,11 @@ h1 {
     border-color: var(--accent);
     color: #fff;
 }
+.schedule-opt.disabled {
+    opacity: 0.45;
+    pointer-events: none;
+    cursor: not-allowed;
+}
 
 .action-row { display: flex; gap: 10px; }
 .action-row .btn { flex:1; text-align:center; }
@@ -539,7 +544,7 @@ async function soloSub(url) {
     await api('refresh');
     toast('已切换，正在刷新…', true);
     loadSubs();
-    setTimeout(loadLogs, 1500);
+    pollRefresh(30);
 }
 
 // 设置调度
@@ -661,15 +666,15 @@ async function setGroupMode(val) {
     updateGroupModeHint(val);
     await api('refresh');
     toast('模式已切换，正在刷新…', true);
-    setTimeout(loadLogs, 1500);
+    pollRefresh(30);
 }
 
 // TUN 全局代理（每次刷新都会按这个开关重新生成配置）
-function updateTunHint(mode, prereq, note) {
+function updateTunHint(mode, prereq, note, locked) {
     let msgs = [];
     msgs.push(mode === 'on' ? 'TUN 已开启：整机流量自动走代理，已自动排除本机 DNS' : 'TUN 已关闭：仅 7890 端口代理');
     if (prereq === false) msgs.push('⚠️ 容器缺少 /dev/net/tun 或 NET_ADMIN，需在 compose 添加后重建容器');
-    if (note) msgs.push('ℹ️ ' + note);
+    if (note) msgs.push((locked ? '🔒 ' : 'ℹ️ ') + note);
     msgs.push('切换后自动刷新');
     document.getElementById('tunModeHint').textContent = msgs.join('；');
 }
@@ -677,13 +682,16 @@ function updateTunHint(mode, prereq, note) {
 async function loadTunMode() {
     let data = await api('tunmode');
     let cur = data.mode === 'on' ? 'on' : 'off';
+    let locked = data.locked === true;
     document.querySelectorAll('#tunModeOpts .schedule-opt').forEach(el => {
         el.classList.toggle('active', el.dataset.val === cur);
+        el.classList.toggle('disabled', locked);
     });
-    updateTunHint(cur, data.prereq, data.note);
+    updateTunHint(cur, data.prereq, data.note, locked);
 }
 
 async function setTunMode(val) {
+    if (document.querySelector('#tunModeOpts .schedule-opt.disabled')) return;
     let r = await api('tunmode', 'POST', 'mode=' + val);
     if (r.error) { toast(r.error, false); return; }
     document.querySelectorAll('#tunModeOpts .schedule-opt').forEach(el => {
@@ -692,7 +700,18 @@ async function setTunMode(val) {
     await api('refresh');
     toast('TUN 已' + (val === 'on' ? '开启' : '关闭') + '，正在刷新…', true);
     setTimeout(loadTunMode, 1500);
-    setTimeout(loadLogs, 1500);
+    pollRefresh(30);
+}
+
+// 触发后台刷新后轮询日志/状态，让用户看到刷新进度（最多 seconds 秒）
+function pollRefresh(seconds) {
+    let n = 0;
+    let t = setInterval(async () => {
+        n++;
+        await loadLogs();
+        await loadStatus();
+        if (n >= seconds) clearInterval(t);
+    }, 1000);
 }
 
 // 回车添加订阅

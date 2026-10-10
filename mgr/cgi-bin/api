@@ -55,6 +55,12 @@ tun_prereq() {
     return 0
 }
 
+# 本机 mihomo API 请求：绕开代理变量，避免经自身代理打回环
+api_curl() {
+    env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY \
+        curl -s "$@"
+}
+
 # 注释判断：行首 # 且不含 TAB 才算注释（含 TAB 是“别名以 # 开头”的订阅行）
 is_comment() {
     case "$1" in
@@ -311,7 +317,34 @@ case "${action}" in
                 fi
             fi
             echo "${val}" > "${TUN_MODE_FILE}"
-            printf '{"success":true,"mode":"%s"}\n' "${val}"
+            # 立即生效：PATCH 运行中的 mihomo（两个面板状态马上一致）。
+            # 失败不阻断：接下来触发的刷新会按配置文件兜底生效。
+            api_secret=$(tr -d '[:space:]' < "${CONFIG_DIR}/.secret" 2>/dev/null)
+            if [ "${val}" = "on" ]; then
+                tun_ex=""
+                for dip in $(grep -iE '^[[:space:]]*nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}'); do
+                    dip="${dip%%\%*}"
+                    case "${dip}" in
+                        *:*) tun_ex="${tun_ex:+,}\"${dip}/128\"" ;;
+                        *.*) tun_ex="${tun_ex:+,}\"${dip}/32\"" ;;
+                    esac
+                done
+                ex_part=""
+                [ -n "${tun_ex}" ] && ex_part=",\"route-exclude-address\":[${tun_ex}]"
+                payload=$(printf '{"tun":{"enable":true,"stack":"mixed","mtu":1500,"auto-route":true,"auto-detect-interface":true,"dns-hijack":["any:53"]%s}}' "${ex_part}")
+            else
+                payload='{"tun":{"enable":false}}'
+            fi
+            if [ -n "${api_secret}" ]; then
+                code=$(api_curl --max-time 5 -o /dev/null -w "%{http_code}" -X PATCH http://127.0.0.1:9090/configs -H "Content-Type: application/json" -H "Authorization: Bearer ${api_secret}" -d "${payload}" 2>/dev/null)
+            else
+                code=$(api_curl --max-time 5 -o /dev/null -w "%{http_code}" -X PATCH http://127.0.0.1:9090/configs -H "Content-Type: application/json" -d "${payload}" 2>/dev/null)
+            fi
+            patched=false
+            case "${code}" in
+                200|204) patched=true ;;
+            esac
+            printf '{"success":true,"mode":"%s","patched":%s}\n' "${val}" "${patched}"
         else
             val=$(head -1 "${TUN_MODE_FILE}" 2>/dev/null)
             case "${val}" in on) val="on" ;; *) val="off" ;; esac
@@ -335,7 +368,21 @@ case "${action}" in
                         ;;
                 esac
             fi
-            printf '{"mode":"%s","prereq":%s,"locked":%s,"note":"%s"}\n' "${val}" "${preq}" "${locked}" "${note}"
+            # 当前运行状态（用于发现 9090 面板的临时改动，与预期不一致时页面给出提示）
+            runtime=""
+            if command -v jq >/dev/null 2>&1; then
+                api_secret=$(tr -d '[:space:]' < "${CONFIG_DIR}/.secret" 2>/dev/null)
+                if [ -n "${api_secret}" ]; then
+                    rt=$(api_curl --max-time 3 -H "Authorization: Bearer ${api_secret}" http://127.0.0.1:9090/configs 2>/dev/null | jq -r '.tun.enable' 2>/dev/null)
+                else
+                    rt=$(api_curl --max-time 3 http://127.0.0.1:9090/configs 2>/dev/null | jq -r '.tun.enable' 2>/dev/null)
+                fi
+                case "${rt}" in
+                    true) runtime="on" ;;
+                    false) runtime="off" ;;
+                esac
+            fi
+            printf '{"mode":"%s","prereq":%s,"locked":%s,"runtime":"%s","note":"%s"}\n' "${val}" "${preq}" "${locked}" "${runtime}" "${note}"
         fi
         ;;
 

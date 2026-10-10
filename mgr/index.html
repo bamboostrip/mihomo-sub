@@ -670,12 +670,15 @@ async function setGroupMode(val) {
 }
 
 // TUN 全局代理（每次刷新都会按这个开关重新生成配置）
-function updateTunHint(mode, prereq, note, locked) {
+function updateTunHint(mode, prereq, note, locked, runtime) {
     let msgs = [];
     msgs.push(mode === 'on' ? 'TUN 已开启：整机流量自动走代理，已自动排除本机 DNS' : 'TUN 已关闭：仅 7890 端口代理');
     if (prereq === false) msgs.push('⚠️ 容器缺少 /dev/net/tun 或 NET_ADMIN，需在 compose 添加后重建容器');
+    if (runtime && runtime !== mode) {
+        msgs.push('⚠️ 当前运行状态（' + (runtime === 'on' ? '开启' : '关闭') + '）与设置不一致，可能刚在 9090 面板改过；下次刷新会恢复为本页设置');
+    }
     if (note) msgs.push((locked ? '🔒 ' : 'ℹ️ ') + note);
-    msgs.push('切换后自动刷新');
+    msgs.push('切换后自动刷新；9090 面板的 TUN 开关仅临时生效，刷新后以本页为准');
     document.getElementById('tunModeHint').textContent = msgs.join('；');
 }
 
@@ -687,7 +690,7 @@ async function loadTunMode() {
         el.classList.toggle('active', el.dataset.val === cur);
         el.classList.toggle('disabled', locked);
     });
-    updateTunHint(cur, data.prereq, data.note, locked);
+    updateTunHint(cur, data.prereq, data.note, locked, data.runtime);
 }
 
 async function setTunMode(val) {

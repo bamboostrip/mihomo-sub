@@ -16,6 +16,7 @@ UA_FILE="${CONFIG_DIR}/user_agent.txt"
 TEMP_DIR="/tmp/mihomo_sub"
 
 CR=$(printf '\r')
+TAB=$(printf '\t')
 log=""
 refresh_time=$(date +"%Y-%m-%d %H:%M:%S %z")
 
@@ -192,7 +193,8 @@ apply_alias_prefix() {
     file="$1"
     prefix="$2"
     tmp_renamed="${file}.renamed"
-    awk -v pre="${prefix}" '
+    # 前缀用环境变量传入：awk -v 会解释 \n 等转义序列，会把别名里的反斜杠吞掉
+    PRE="${prefix}" awk '
         function hexval(h,   n,i,c,d) {
             n = 0
             for (i = 1; i <= length(h); i++) {
@@ -285,7 +287,7 @@ apply_alias_prefix() {
         }
         function is_top(key) { return (key ~ /^[A-Za-z][A-Za-z0-9_-]*:[ \t]*$/) }
         function entry_ind(s,   t) { t=s; sub(/- name:.*$/, "", t); return t }
-        BEGIN { SQ = sprintf("%c", 39); SQSQ = SQ SQ }
+        BEGIN { pre = ENVIRON["PRE"]; SQ = sprintf("%c", 39); SQSQ = SQ SQ }
         NR==FNR {
             if ($0 ~ /^proxies:[ \t]*$/) { sec="proxies"; next }
             if ($0 ~ /^proxy-groups:[ \t]*$/) { sec="groups"; next }
@@ -319,7 +321,9 @@ apply_alias_prefix() {
         }
         sec=="rules" && /^[ \t]*- / {
             # 整行解开外层引号后切分（规则整体被引号包裹时直接 split 会引号失衡），
-            # 各字段解码后比对，命中则整行按规范形式重建
+            # 双引号行剥壳后必须用 yqdec 解码 \U/\u/\x 等转义（yq 会把 emoji
+            # 写成 "\U0001F6D1..."，不解码则字段与 mp 里已解码的名字比对不上，
+            # 策略不会被加别名前缀，重载直接 400），命中则整行按规范形式重建
             ind=$0; sub(/[^ \t].*$/, "", ind)
             rb=$0; sub(/^[ \t]*- +/, "", rb)
             gsub(/^[ \t]+|[ \t]+$/, "", rb)
@@ -327,6 +331,7 @@ apply_alias_prefix() {
             if (length(rb) >= 2 && (q == "\"" || q == SQ) && substr(rb, length(rb), 1) == q) {
                 rb = substr(rb, 2, length(rb) - 2)
                 if (q == SQ) gsub(SQSQ, SQ, rb)
+                else rb = yqdec(rb)
             }
             n=split(rb, f, ",")
             idx=n
@@ -388,9 +393,15 @@ success_count=0
 while IFS= read -r line || [ -n "${line}" ]; do
     # 去除 Windows 换行符 \r
     line="${line%"${CR}"}"
-    # 跳过注释和空行
+    # 跳过空行；"#" 开头的行是注释，但含 TAB 说明是“别名以 # 开头”的订阅行，不能跳过
     case "${line}" in
-        ""|"#"*) continue ;;
+        "") continue ;;
+        "#"*)
+            case "${line}" in
+                *"${TAB}"*) ;;
+                *) continue ;;
+            esac
+            ;;
     esac
 
     sub_count=$((sub_count + 1))

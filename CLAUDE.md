@@ -44,7 +44,7 @@ Docker 化的 mihomo（clash meta）代理方案，内置 Web 管理页面、多
 ```
 check_schedule（非 --now 时检查 last_run 时间戳）
   → 清理 subconverter 缓存
-  → 读取 sub_urls.txt（去 \r、跳过空行和 # 注释，支持 `别名<TAB>URL`）
+  → 读取 sub_urls.txt（去 \r、跳过空行和 # 注释——别名以 # 开头时该行含 TAB，不视为注释；支持 `别名<TAB>URL`）
   → 对每个 URL:
      ├─ curl 直接下载（UA=clash-verge/v2.5.1，可通过 user_agent.txt 覆盖）
      ├─ 检测内容含 ^proxies: → 直接当 Clash YAML 用
